@@ -87,3 +87,5 @@ python code/hidden_state_similarity/merge_results.py
 to get the comparsion figures.
 
 
+## License
+This project is licensed under the MIT License.
