@@ -1,7 +1,5 @@
 # Ignore any files or directories containing 'results'
-*results*
 *results*/**
 
 # Ignore any files or directories containing 'outputs'
-*outputs*
 *outputs*/**
