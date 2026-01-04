@@ -15,7 +15,14 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from collections import Counter
 from copy import deepcopy
+import random
+import numpy as np
 
+def set_seeds(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    random.seed(seed)
+    np.random.seed(seed)
 
 def generate_answer(model, tokenizer, question: str, device: str, max_new_tokens: int = 512, template=True) -> str:
     if template:
@@ -90,8 +97,16 @@ def main():
     parser.add_argument("--max_new_tokens", type=int, default=512)
     parser.add_argument("--mode", type=str, default="strict",
                     choices=["strict", "separate"],
-                    help="strict: 当前逻辑; separate: 对错都拆成多个子 case")
+                    help="Data sample: strict for Llama; separate for GPT-J;")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed for torch / cuda / python"
+    )
+
     args = parser.parse_args()
+    set_seeds(args.seed)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)

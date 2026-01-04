@@ -17,7 +17,11 @@ We recommend running `code/model_structure.py` first to examine the model struct
 
 ### Data Split
 
-run `split_data.sh` to get the **Correct (Class 1), Incorrect (Class 3), and Missing (Class 4)** subsets.
+run 
+```
+bash scripts/split_data.sh
+``` 
+to get the **Correct (Class 1), Incorrect (Class 3), and Missing (Class 4)** subsets.
 
 ### Patchscope
 
@@ -39,14 +43,47 @@ We follow the pipeline of [HoppingTooLate](https://github.com/edenbiran/HoppingT
 
     Pleas run the following script to get the generation results.
     ```
-    bash patchscope.sh
+    bash scripts/patchscope.sh
     ```
 
 - Filter
     To filter the random generation, please run `code/patchscope/filter_lowsim_generation.py`. You can set **global** or **case** as the filtering strategy.
 
-#### Summary Results and Draw Pictures
+#### Merge Results and Draw Pictures
 
+- Merge
 
+    To merge results, run the following script:
+    ```
+    bash scripts/merge_patchscopes_results.sh
+    ```
+    You will receive a JSON file containing the merge results and a CSV file containing summary statistics.
+
+- Draw
+
+    To draw the bar, run:
+    ```
+    python code/patchscope/summary_generation_results.py
+    ```
+    To draw the distribution line, run:
+    ```
+    bash scripts/draw_patchscopes_distribution.sh
+    ```
 
 ### Hidden State Similarity
+
+Before run, please check the layer name of the model.
+Then run
+```
+bash scripts/hidden_state_sim.sh
+```
+You will get the similarity matrix(.npy) for each layer and the picture for one subset.
+
+To merge results, please run
+
+```
+python code/hidden_state_similarity/merge_results.py
+```
+to get the comparsion figures.
+
+
