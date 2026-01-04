@@ -1,0 +1,12 @@
+datasets==2.14.7
+jsonlines==4.0.0
+matplotlib==3.10.8
+numpy==1.24.3
+pandas==2.3.3
+requests==2.27.1
+seaborn==0.13.2
+SPARQLWrapper==2.0.0
+torch==2.1.0+cu121
+tqdm==4.65.0
+transformers==4.40.0
+baukit @ git+https://github.com/davidbau/baukit@9d51abd51ebf29769aecc38c4cbef459b731a36e
