@@ -457,13 +457,20 @@ class ModelAndTokenizer:
         low_cpu_mem_usage=False,
         torch_dtype=None,
     ):
+        LOCAL_MODEL_PATHS = {
+            "gpt2-xl": "/data/xkliu/hf_models/gpt2-xl",
+            "EleutherAI/gpt-j-6B": "/data/xkliu/hf_models/gpt-j-6b",
+            "EleutherAI/gpt-neox-20b": "/data/xkliu/hf_models/gpt-neox-20b",
+        }
+        model_path = LOCAL_MODEL_PATHS.get(model_name, model_name)
+
         if tokenizer is None:
-            assert model_name is not None
-            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            assert model_path is not None
+            tokenizer = AutoTokenizer.from_pretrained(model_path)
         if model is None:
-            assert model_name is not None
+            assert model_path is not None
             model = AutoModelForCausalLM.from_pretrained(
-                model_name, low_cpu_mem_usage=low_cpu_mem_usage, torch_dtype=torch_dtype
+                model_path, low_cpu_mem_usage=low_cpu_mem_usage, torch_dtype=torch_dtype
             )
             nethook.set_requires_grad(False, model)
             model.eval().cuda()
