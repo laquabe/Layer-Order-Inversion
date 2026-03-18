@@ -35,12 +35,14 @@ def convert_cases(cases: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for case in cases:
         subject = extract_subject(case)
         questions = case.get("questions", [])
+        answer = case.get("answer", "")
 
         for question_index, question in enumerate(questions):
             record = copy.deepcopy(case)
             record["known_id"] = known_id
             record["subject"] = subject
             record["prompt"] = question
+            record["attribute"] = answer
             record["source_question_index"] = question_index
             converted.append(record)
             known_id += 1
