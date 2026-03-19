@@ -4,6 +4,8 @@ import os
 import re
 from collections import defaultdict
 
+from typing import List
+
 import numpy
 import torch
 from datasets import load_dataset
@@ -107,6 +109,7 @@ def main():
                     knowledge["prompt"],
                     knowledge["subject"],
                     expect=knowledge["attribute"],
+                    answer_aliases=knowledge.get("answer_alias", []),
                     kind=kind,
                     noise=noise_level,
                     uniform_noise=uniform_noise,
@@ -306,17 +309,21 @@ def calculate_hidden_flow(
     window=10,
     kind=None,
     expect=None,
+    answer_aliases=None,
 ):
     """
     Runs causal tracing over every token/layer combination in the network
     and returns a dictionary numerically summarizing the results.
     """
-    inp = make_inputs(mt.tokenizer, [prompt] * (samples + 1))
+    answer_aliases = answer_aliases or []
+    formatted_prompt = format_qa_prompt(prompt)
+    inp = make_inputs(mt.tokenizer, [formatted_prompt] * (samples + 1))
     with torch.no_grad():
         answer_t, base_score = [d[0] for d in predict_from_input(mt.model, inp)]
     [answer] = decode_tokens(mt.tokenizer, [answer_t])
-    if expect is not None and answer.strip() != expect:
-        return dict(correct_prediction=False)
+    golds = [expect] + list(answer_aliases) if expect is not None else list(answer_aliases)
+    if golds and not check_contains(answer.strip(), golds):
+        return dict(correct_prediction=False, answer=answer)
     e_range = find_token_range(mt.tokenizer, inp["input_ids"][0], subject)
     if token_range == "subject_last":
         token_range = [e_range[1] - 1]
@@ -377,6 +384,7 @@ def trace_important_states(
     replace=False,
     token_range=None,
 ):
+    # token range 可以指定，从而只修改last token
     ntoks = inp["input_ids"].shape[1]
     table = []
 
@@ -596,6 +604,15 @@ def plot_all_flow(mt, prompt, subject=None):
 
 
 # Utilities for dealing with tokens
+def format_qa_prompt(question: str) -> str:
+    return f"Question: {question}\nAnswer:"
+
+
+def check_contains(pred: str, gold_list: List[str]) -> bool:
+    p = pred.lower()
+    return any(g and g.lower() in p for g in gold_list)
+
+
 def make_inputs(tokenizer, prompts, device="cuda"):
     token_lists = [tokenizer.encode(p) for p in prompts]
     maxlen = max(len(t) for t in token_lists)
