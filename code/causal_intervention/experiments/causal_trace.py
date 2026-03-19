@@ -4,7 +4,7 @@ import os
 import re
 from collections import defaultdict
 
-from typing import List
+from typing import List, Optional, Tuple
 
 import numpy
 import torch
@@ -137,12 +137,13 @@ def trace_with_patch(
     model,  # The model
     inp,  # A set of inputs
     states_to_patch,  # A list of (token index, layername) triples to restore
-    answers_t,  # Answer probabilities to collect
+    answers_t,  # Answer token ids to collect
     tokens_to_mix,  # Range of tokens to corrupt (begin, end)
     noise=0.1,  # Level of noise to add
     uniform_noise=False,
     replace=False,  # True to replace with instead of add noise
     trace_layers=None,  # List of traced outputs to return
+    answer_position=None,  # Position where the first answer token is predicted
 ):
     """
     Runs a single causal trace.  Given a model and a batch input where
@@ -219,8 +220,10 @@ def trace_with_patch(
     ) as td:
         outputs_exp = model(**inp)
 
-    # We report softmax probabilities for the answers_t token predictions of interest.
-    probs = torch.softmax(outputs_exp.logits[1:, -1, :], dim=1).mean(dim=0)[answers_t]
+    target_position = -1 if answer_position is None else answer_position - 1
+    probs = torch.softmax(outputs_exp.logits[1:, target_position, :], dim=1).mean(dim=0)[
+        answers_t
+    ]
 
     # If tracing all layers, collect all activations together to return.
     if trace_layers is not None:
@@ -317,20 +320,38 @@ def calculate_hidden_flow(
     """
     answer_aliases = answer_aliases or []
     formatted_prompt = format_qa_prompt(prompt)
-    inp = make_inputs(mt.tokenizer, [formatted_prompt] * (samples + 1))
-    with torch.no_grad():
-        answer_t, base_score = [d[0] for d in predict_from_input(mt.model, inp)]
-    [answer] = decode_tokens(mt.tokenizer, [answer_t])
+    generated_text = generate_answer(mt, formatted_prompt)
     golds = [expect] + list(answer_aliases) if expect is not None else list(answer_aliases)
-    if golds and not check_contains(answer.strip(), golds):
-        return dict(correct_prediction=False, answer=answer)
+    match = find_answer_match(generated_text, golds)
+    if match is None:
+        return dict(correct_prediction=False, generated_text=generated_text)
+
+    answer, answer_char_range = match
+    prefix_text = formatted_prompt + generated_text[: answer_char_range[0]]
+    inp = make_inputs(mt.tokenizer, [prefix_text] * (samples + 1))
+    answer_token_ids = mt.tokenizer.encode(answer, add_special_tokens=False)
+    if not answer_token_ids:
+        return dict(correct_prediction=False, generated_text=generated_text)
+
+    answer_t = answer_token_ids[0]
+    answer_position = inp["input_ids"].shape[1]
+    with torch.no_grad():
+        base_score = answer_prob_at_position(mt.model, inp, answer_t, answer_position)[0].item()
+
     e_range = find_token_range(mt.tokenizer, inp["input_ids"][0], subject)
     if token_range == "subject_last":
         token_range = [e_range[1] - 1]
     elif token_range is not None:
         raise ValueError(f"Unknown token_range: {token_range}")
     low_score = trace_with_patch(
-        mt.model, inp, [], answer_t, e_range, noise=noise, uniform_noise=uniform_noise
+        mt.model,
+        inp,
+        [],
+        answer_t,
+        e_range,
+        noise=noise,
+        uniform_noise=uniform_noise,
+        answer_position=answer_position,
     ).item()
     if not kind:
         differences = trace_important_states(
@@ -339,6 +360,7 @@ def calculate_hidden_flow(
             inp,
             e_range,
             answer_t,
+            answer_position=answer_position,
             noise=noise,
             uniform_noise=uniform_noise,
             replace=replace,
@@ -351,6 +373,7 @@ def calculate_hidden_flow(
             inp,
             e_range,
             answer_t,
+            answer_position=answer_position,
             noise=noise,
             uniform_noise=uniform_noise,
             replace=replace,
@@ -367,6 +390,9 @@ def calculate_hidden_flow(
         input_tokens=decode_tokens(mt.tokenizer, inp["input_ids"][0]),
         subject_range=e_range,
         answer=answer,
+        generated_text=generated_text,
+        answer_char_range=answer_char_range,
+        answer_position=answer_position,
         window=window,
         correct_prediction=True,
         kind=kind or "",
@@ -379,6 +405,7 @@ def trace_important_states(
     inp,
     e_range,
     answer_t,
+    answer_position=None,
     noise=0.1,
     uniform_noise=False,
     replace=False,
@@ -402,6 +429,7 @@ def trace_important_states(
                 noise=noise,
                 uniform_noise=uniform_noise,
                 replace=replace,
+                answer_position=answer_position,
             )
             row.append(r)
         table.append(torch.stack(row))
@@ -415,6 +443,7 @@ def trace_important_window(
     e_range,
     answer_t,
     kind,
+    answer_position=None,
     window=10,
     noise=0.1,
     uniform_noise=False,
@@ -444,6 +473,7 @@ def trace_important_window(
                 noise=noise,
                 uniform_noise=uniform_noise,
                 replace=replace,
+                answer_position=answer_position,
             )
             row.append(r)
         table.append(torch.stack(row))
@@ -611,6 +641,43 @@ def format_qa_prompt(question: str) -> str:
 def check_contains(pred: str, gold_list: List[str]) -> bool:
     p = pred.lower()
     return any(g and g.lower() in p for g in gold_list)
+
+
+def generate_answer(mt, prompt: str, max_new_tokens: int = 128) -> str:
+    inputs = mt.tokenizer(prompt, return_tensors="pt").to(mt.model.device)
+    with torch.no_grad():
+        outputs = mt.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=0.0,
+            do_sample=False,
+            pad_token_id=mt.tokenizer.pad_token_id,
+        )
+    generated_ids = outputs[0][inputs["input_ids"].shape[1] :]
+    return mt.tokenizer.decode(generated_ids, skip_special_tokens=True)
+
+
+def find_answer_match(text: str, candidates: List[str]) -> Optional[Tuple[str, Tuple[int, int]]]:
+    lowered_text = text.lower()
+    matches = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        lowered_candidate = candidate.lower()
+        start = lowered_text.find(lowered_candidate)
+        if start != -1:
+            matches.append((start, start + len(candidate), candidate))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (item[0], -len(item[2])))
+    start, end, candidate = matches[0]
+    return candidate, (start, end)
+
+
+def answer_prob_at_position(model, inp, answer_t, answer_position):
+    out = model(**inp)["logits"]
+    probs = torch.softmax(out[:, answer_position - 1, :], dim=1)
+    return probs[:, answer_t]
 
 
 def make_inputs(tokenizer, prompts, device="cuda"):
