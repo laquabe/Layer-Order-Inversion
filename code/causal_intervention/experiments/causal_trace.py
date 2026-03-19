@@ -338,11 +338,18 @@ def calculate_hidden_flow(
     with torch.no_grad():
         base_score = answer_prob_at_position(mt.model, inp, answer_t, answer_position)[0].item()
 
+    prompt_token_ids = mt.tokenizer.encode(formatted_prompt)
+    prompt_token_len = len(prompt_token_ids)
+    restore_token_range = range(max(0, prompt_token_len - 5), prompt_token_len)
+
     e_range = find_token_range(mt.tokenizer, inp["input_ids"][0], subject)
     if token_range == "subject_last":
         token_range = [e_range[1] - 1]
-    elif token_range is not None:
+    elif token_range is None:
+        token_range = restore_token_range
+    else:
         raise ValueError(f"Unknown token_range: {token_range}")
+
     low_score = trace_with_patch(
         mt.model,
         inp,
@@ -389,6 +396,7 @@ def calculate_hidden_flow(
         input_ids=inp["input_ids"][0],
         input_tokens=decode_tokens(mt.tokenizer, inp["input_ids"][0]),
         subject_range=e_range,
+        restoration_range=(max(0, prompt_token_len - 5), prompt_token_len),
         answer=answer,
         generated_text=generated_text,
         answer_char_range=answer_char_range,
