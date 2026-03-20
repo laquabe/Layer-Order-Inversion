@@ -352,7 +352,6 @@ def calculate_hidden_flow(
 
     prompt_token_ids = mt.tokenizer.encode(formatted_prompt)
     prompt_token_len = len(prompt_token_ids)
-    prompt_input_tokens = decode_tokens(mt.tokenizer, prompt_token_ids)
     prompt_subject_range = find_token_range(mt.tokenizer, prompt_token_ids, subject)
     prompt_last_token_index = prompt_token_len - 1
 
@@ -361,7 +360,7 @@ def calculate_hidden_flow(
         token_range = [e_range[1] - 1]
     else:
         if token_range is None:
-            token_range = range(prompt_token_len)
+            token_range = range(prompt_subject_range[0], prompt_last_token_index + 1)
         else:
             raise ValueError(f"Unknown token_range: {token_range}")
 
@@ -411,16 +410,8 @@ def calculate_hidden_flow(
         high_score=base_score,
         input_ids=inp["input_ids"][0],
         input_tokens=decode_tokens(mt.tokenizer, inp["input_ids"][0]),
-        subject_range=e_range,
-        traced_token_indices=list(token_range),
-        prompt_text=formatted_prompt,
-        prompt_input_tokens=prompt_input_tokens,
-        prompt_subject_range=prompt_subject_range,
-        prompt_last_token_index=prompt_last_token_index,
+        num_subject_tokens=prompt_subject_range[1] - prompt_subject_range[0],
         answer=answer,
-        generated_text=generated_text,
-        answer_char_range=answer_char_range,
-        answer_position=answer_position,
         window=window,
         correct_prediction=True,
         kind=kind or "",
