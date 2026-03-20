@@ -198,7 +198,7 @@ def trace_with_patch(
                     x[1:, b:e] = noise_data
                 else:
                     x[1:, b:e] += noise_data
-            return x
+        return x
     additional_layers = [] if trace_layers is None else trace_layers
 
     donor_layers = [embed_layername] + list(patch_spec.keys())
