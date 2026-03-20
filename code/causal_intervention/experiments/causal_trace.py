@@ -25,6 +25,9 @@ from util.globals import DATA_DIR
 from util.runningstats import Covariance, tally
 
 
+PROMPT_PATCH_TOKEN_COUNT = 10
+
+
 def main():
     parser = argparse.ArgumentParser(description="Causal Tracing")
 
@@ -349,9 +352,12 @@ def calculate_hidden_flow(
 
     prompt_token_ids = mt.tokenizer.encode(formatted_prompt)
     prompt_token_len = len(prompt_token_ids)
-    restore_token_range = range(max(0, prompt_token_len - 5), prompt_token_len)
+    restore_token_range = range(
+        max(0, prompt_token_len - PROMPT_PATCH_TOKEN_COUNT),
+        prompt_token_len,
+    )
     prompt_input_tokens = decode_tokens(mt.tokenizer, prompt_token_ids)
-    prompt_traced_token_indices = list(range(max(0, prompt_token_len - 5), prompt_token_len))
+    prompt_traced_token_indices = list(restore_token_range)
 
     e_range = find_token_range(mt.tokenizer, inp["input_ids"][0], subject)
     if token_range == "subject_last":
@@ -408,7 +414,10 @@ def calculate_hidden_flow(
         input_ids=inp["input_ids"][0],
         input_tokens=decode_tokens(mt.tokenizer, inp["input_ids"][0]),
         subject_range=e_range,
-        restoration_range=(max(0, prompt_token_len - 5), prompt_token_len),
+        restoration_range=(
+            max(0, prompt_token_len - PROMPT_PATCH_TOKEN_COUNT),
+            prompt_token_len,
+        ),
         traced_token_indices=list(token_range),
         prompt_input_tokens=prompt_input_tokens,
         prompt_traced_token_indices=prompt_traced_token_indices,
