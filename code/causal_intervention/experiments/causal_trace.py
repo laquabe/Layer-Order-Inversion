@@ -350,11 +350,19 @@ def calculate_hidden_flow(
     with torch.no_grad():
         base_score = answer_prob_at_position(mt.model, inp, answer_t, answer_position)[0].item()
 
+    prompt_token_ids = mt.tokenizer.encode(formatted_prompt)
+    prompt_token_len = len(prompt_token_ids)
+    prompt_input_tokens = decode_tokens(mt.tokenizer, prompt_token_ids)
+    prompt_subject_range = find_token_range(mt.tokenizer, prompt_token_ids, subject)
+    prompt_last_token_index = prompt_token_len - 1
+
     e_range = find_token_range(mt.tokenizer, inp["input_ids"][0], subject)
     if token_range == "subject_last":
         token_range = [e_range[1] - 1]
     else:
-        if token_range is not None:
+        if token_range is None:
+            token_range = range(prompt_token_len)
+        else:
             raise ValueError(f"Unknown token_range: {token_range}")
 
     low_score = trace_with_patch(
@@ -404,7 +412,11 @@ def calculate_hidden_flow(
         input_ids=inp["input_ids"][0],
         input_tokens=decode_tokens(mt.tokenizer, inp["input_ids"][0]),
         subject_range=e_range,
-        traced_token_indices=list(token_range) if token_range is not None else None,
+        traced_token_indices=list(token_range),
+        prompt_text=formatted_prompt,
+        prompt_input_tokens=prompt_input_tokens,
+        prompt_subject_range=prompt_subject_range,
+        prompt_last_token_index=prompt_last_token_index,
         answer=answer,
         generated_text=generated_text,
         answer_char_range=answer_char_range,
@@ -600,11 +612,15 @@ def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=
         else str(result["kind"])
     )
     window = result.get("window", 10)
+    prompt_labels = result.get("prompt_input_tokens")
     all_labels = list(result["input_tokens"])
     traced_token_indices = result.get("traced_token_indices")
     if traced_token_indices is None:
         traced_token_indices = list(range(len(differences)))
-    labels = [all_labels[i] for i in traced_token_indices]
+    if prompt_labels is not None:
+        labels = [prompt_labels[i] for i in traced_token_indices]
+    else:
+        labels = [all_labels[i] for i in traced_token_indices]
 
     with plt.rc_context(rc={"font.family": "Liberation Serif"}):
         fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
