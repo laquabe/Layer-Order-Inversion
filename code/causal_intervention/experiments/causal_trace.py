@@ -153,15 +153,12 @@ def trace_with_patch(
 
     The convention used by this function is that the zeroth element of the
     batch is the uncorrupted run, and the subsequent elements of the batch
-    are the corrupted runs.  The argument tokens_to_mix specifies an
-    be corrupted by adding Gaussian noise to the embedding for the batch
-    inputs other than the first element in the batch.  Alternately,
-    subsequent runs could be corrupted by simply providing different
-    input tokens via the passed input batch.
+    are corrupted runs that provide donor states. The argument tokens_to_mix
+    specifies the token span to corrupt on the donor runs.
 
     Then when running, a specified set of hidden states will be uncorrupted
-    by restoring their values to the same vector that they had in the
-    zeroth uncorrupted run.  This set of hidden states is listed in
+    by replacing the clean run's values with those from a corrupted donor run.
+    This set of hidden states is listed in
     states_to_patch, by listing [(token_index, layername), ...] pairs.
     To trace the effect of just a single state, this can be just a single
     token/layer pair.  To trace the effect of restoring a set of states,
@@ -189,7 +186,7 @@ def trace_with_patch(
     else:
         noise_fn = noise
 
-    def patch_rep(x, layer):
+    def corrupt_rep(x, layer):
         if layer == embed_layername:
             # If requested, we corrupt a range of token embeddings on batch items x[1:]
             if tokens_to_mix is not None:
@@ -202,21 +199,33 @@ def trace_with_patch(
                 else:
                     x[1:, b:e] += noise_data
             return x
-        if layer not in patch_spec:
+    additional_layers = [] if trace_layers is None else trace_layers
+
+    donor_layers = [embed_layername] + list(patch_spec.keys())
+    first_pass_trace = None
+    if patch_spec:
+        with torch.no_grad(), nethook.TraceDict(
+            model,
+            donor_layers,
+            edit_output=corrupt_rep,
+        ) as td:
+            model(**inp)
+            first_pass_trace = td
+
+    def inject_rep(x, layer):
+        if layer == embed_layername or layer not in patch_spec:
             return x
-        # If this layer is in the patch_spec, restore the uncorrupted hidden state
-        # for selected tokens.
         h = untuple(x)
+        donor_h = untuple(first_pass_trace[layer].output)
         for t in patch_spec[layer]:
-            h[1:, t] = h[0, t]
+            h[1:, t] = donor_h[1:, t]
         return x
 
-    # With the patching rules defined, run the patched model in inference.
-    additional_layers = [] if trace_layers is None else trace_layers
+    # With the patching rules defined, run the patched-clean model in inference.
     with torch.no_grad(), nethook.TraceDict(
         model,
         [embed_layername] + list(patch_spec.keys()) + additional_layers,
-        edit_output=patch_rep,
+        edit_output=inject_rep,
     ) as td:
         outputs_exp = model(**inp)
 
@@ -389,6 +398,7 @@ def calculate_hidden_flow(
             token_range=token_range,
         )
     differences = differences.detach().cpu()
+    differences = (base_score - differences).detach().cpu()
     return dict(
         scores=differences,
         low_score=low_score,
