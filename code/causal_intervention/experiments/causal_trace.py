@@ -350,6 +350,8 @@ def calculate_hidden_flow(
     prompt_token_ids = mt.tokenizer.encode(formatted_prompt)
     prompt_token_len = len(prompt_token_ids)
     restore_token_range = range(max(0, prompt_token_len - 5), prompt_token_len)
+    prompt_input_tokens = decode_tokens(mt.tokenizer, prompt_token_ids)
+    prompt_traced_token_indices = list(range(max(0, prompt_token_len - 5), prompt_token_len))
 
     e_range = find_token_range(mt.tokenizer, inp["input_ids"][0], subject)
     if token_range == "subject_last":
@@ -408,6 +410,8 @@ def calculate_hidden_flow(
         subject_range=e_range,
         restoration_range=(max(0, prompt_token_len - 5), prompt_token_len),
         traced_token_indices=list(token_range),
+        prompt_input_tokens=prompt_input_tokens,
+        prompt_traced_token_indices=prompt_traced_token_indices,
         answer=answer,
         generated_text=generated_text,
         answer_char_range=answer_char_range,
@@ -603,15 +607,16 @@ def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=
         else str(result["kind"])
     )
     window = result.get("window", 10)
-    all_labels = list(result["input_tokens"])
-    traced_token_indices = result.get("traced_token_indices")
-    if traced_token_indices is None:
-        traced_token_indices = list(range(len(differences)))
-    labels = [all_labels[i] for i in traced_token_indices]
-    for i in range(*result["subject_range"]):
-        if i in traced_token_indices:
-            label_index = traced_token_indices.index(i)
-            labels[label_index] = labels[label_index] + "*"
+    prompt_labels = result.get("prompt_input_tokens")
+    prompt_traced_token_indices = result.get("prompt_traced_token_indices")
+    if prompt_labels is not None and prompt_traced_token_indices is not None:
+        labels = [prompt_labels[i] for i in prompt_traced_token_indices]
+    else:
+        all_labels = list(result["input_tokens"])
+        traced_token_indices = result.get("traced_token_indices")
+        if traced_token_indices is None:
+            traced_token_indices = list(range(len(differences)))
+        labels = [all_labels[i] for i in traced_token_indices]
 
     with plt.rc_context(rc={"font.family": "Liberation Serif"}):
         fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
