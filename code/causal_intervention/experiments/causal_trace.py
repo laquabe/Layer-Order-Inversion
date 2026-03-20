@@ -407,6 +407,7 @@ def calculate_hidden_flow(
         input_tokens=decode_tokens(mt.tokenizer, inp["input_ids"][0]),
         subject_range=e_range,
         restoration_range=(max(0, prompt_token_len - 5), prompt_token_len),
+        traced_token_indices=list(token_range),
         answer=answer,
         generated_text=generated_text,
         answer_char_range=answer_char_range,
@@ -595,7 +596,6 @@ def plot_hidden_flow(
 
 def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=None):
     differences = result["scores"]
-    low_score = result["low_score"]
     answer = result["answer"]
     kind = (
         None
@@ -603,9 +603,15 @@ def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=
         else str(result["kind"])
     )
     window = result.get("window", 10)
-    labels = list(result["input_tokens"])
+    all_labels = list(result["input_tokens"])
+    traced_token_indices = result.get("traced_token_indices")
+    if traced_token_indices is None:
+        traced_token_indices = list(range(len(differences)))
+    labels = [all_labels[i] for i in traced_token_indices]
     for i in range(*result["subject_range"]):
-        labels[i] = labels[i] + "*"
+        if i in traced_token_indices:
+            label_index = traced_token_indices.index(i)
+            labels[label_index] = labels[label_index] + "*"
 
     with plt.rc_context(rc={"font.family": "Liberation Serif"}):
         fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
@@ -614,7 +620,7 @@ def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=
             cmap={None: "Purples", "None": "Purples", "mlp": "Greens", "attn": "Reds"}[
                 kind
             ],
-            vmin=low_score,
+            vmin=0,
         )
         ax.invert_yaxis()
         ax.set_yticks([0.5 + i for i in range(len(differences))])
@@ -624,20 +630,19 @@ def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=
         if not modelname:
             modelname = "GPT"
         if not kind:
-            ax.set_title("Impact of restoring state after corrupted input")
+            ax.set_title("Impact of injecting corrupted states into clean run")
             ax.set_xlabel(f"single restored layer within {modelname}")
         else:
             kindname = "MLP" if kind == "mlp" else "Attn"
-            ax.set_title(f"Impact of restoring {kindname} after corrupted input")
-            ax.set_xlabel(f"center of interval of {window} restored {kindname} layers")
+            ax.set_title(f"Impact of injecting corrupted {kindname} states into clean run")
+            ax.set_xlabel(f"center of interval of {window} patched {kindname} layers")
         cb = plt.colorbar(h)
         if title is not None:
             ax.set_title(title)
         if xlabel is not None:
             ax.set_xlabel(xlabel)
         elif answer is not None:
-            # The following should be cb.ax.set_xlabel, but this is broken in matplotlib 3.5.1.
-            cb.ax.set_title(f"p({str(answer).strip()})", y=-0.16, fontsize=10)
+            cb.ax.set_title(f"Δp({str(answer).strip()})", y=-0.16, fontsize=10)
         if savepdf:
             os.makedirs(os.path.dirname(savepdf), exist_ok=True)
             plt.savefig(savepdf, bbox_inches="tight")
