@@ -404,6 +404,8 @@ def calculate_hidden_flow(
         )
     differences = differences.detach().cpu()
     differences = (base_score - differences).detach().cpu()
+    prompt_tokens = decode_tokens(mt.tokenizer, prompt_token_ids)
+    traced_labels = prompt_tokens[prompt_subject_range[0] : prompt_last_token_index + 1]
     return dict(
         scores=differences,
         low_score=low_score,
@@ -411,6 +413,7 @@ def calculate_hidden_flow(
         input_ids=inp["input_ids"][0],
         input_tokens=decode_tokens(mt.tokenizer, inp["input_ids"][0]),
         num_subject_tokens=prompt_subject_range[1] - prompt_subject_range[0],
+        traced_labels=traced_labels,
         answer=answer,
         window=window,
         correct_prediction=True,
@@ -603,15 +606,7 @@ def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=
         else str(result["kind"])
     )
     window = result.get("window", 10)
-    prompt_labels = result.get("prompt_input_tokens")
-    all_labels = list(result["input_tokens"])
-    traced_token_indices = result.get("traced_token_indices")
-    if traced_token_indices is None:
-        traced_token_indices = list(range(len(differences)))
-    if prompt_labels is not None:
-        labels = [prompt_labels[i] for i in traced_token_indices]
-    else:
-        labels = [all_labels[i] for i in traced_token_indices]
+    labels = list(result.get("traced_labels", result["input_tokens"]))
 
     with plt.rc_context(rc={"font.family": "Liberation Serif"}):
         fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
