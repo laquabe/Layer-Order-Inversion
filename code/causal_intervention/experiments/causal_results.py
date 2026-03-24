@@ -220,7 +220,7 @@ def plot_focus_token_heatmap(
         plt.close(fig)
 
 
-def collect_case_ratio(case: dict, last_k: int) -> Optional[float]:
+def collect_case_ratio_components(case: dict, last_k: int) -> Optional[Tuple[float, float]]:
     scores = case["scores"]
     num_subject_tokens = case["num_subject_tokens"]
     subject_last_idx = num_subject_tokens - 1
@@ -244,18 +244,26 @@ def collect_case_ratio(case: dict, last_k: int) -> Optional[float]:
         return None
 
     last_k_max = float(np.max(np.stack(tail_rows, axis=0)))
-    return last_k_max / subject_last_max
+    return last_k_max, subject_last_max
 
 
 def summarize_subset_ratios(cases: List[dict], last_k: int) -> Optional[float]:
-    ratios = []
+    """Return mean(last-k max) / mean(subject-last max) within one subset."""
+    last_k_values = []
+    subject_last_values = []
     for case in cases:
-        ratio = collect_case_ratio(case, last_k=last_k)
-        if ratio is not None:
-            ratios.append(ratio)
-    if not ratios:
+        components = collect_case_ratio_components(case, last_k=last_k)
+        if components is not None:
+            last_k_max, subject_last_max = components
+            last_k_values.append(last_k_max)
+            subject_last_values.append(subject_last_max)
+    if not last_k_values or not subject_last_values:
         return None
-    return float(np.mean(ratios))
+    mean_last_k = float(np.mean(last_k_values))
+    mean_subject_last = float(np.mean(subject_last_values))
+    if mean_subject_last <= 0:
+        return None
+    return mean_last_k / mean_subject_last
 
 
 def pretty_subset_name(run_dir: Path) -> str:
@@ -316,8 +324,8 @@ def plot_subset_ratio_comparison(
 
         ax.set_xticks(x)
         ax.set_xticklabels(subset_names)
-        ax.set_ylabel("last-k / subject-last ratio")
-        ax.set_title("Cross-subset comparison of tail-token interference ratios")
+        ax.set_ylabel("Mean(last-k max) / Mean(subject-last max)")
+        ax.set_title("Cross-subset comparison of aggregated tail-token interference ratios")
         ax.legend(frameon=False)
         ymax = 0.0
         for subset in subset_scores.values():
