@@ -1,6 +1,6 @@
 import argparse
 import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -202,82 +202,6 @@ def plot_focus_token_heatmap(
         plt.close(fig)
 
 
-def collect_peak_statistics(cases: List[dict]) -> dict:
-    peak_layers = []
-    dist_to_subject_last = []
-    dist_to_last_token = []
-
-    for case in cases:
-        scores = case["scores"]
-        num_subject_tokens = case["num_subject_tokens"]
-        peak_token_idx, peak_layer_idx = np.unravel_index(np.argmax(scores), scores.shape)
-
-        subject_last_idx = num_subject_tokens - 1
-        last_token_idx = scores.shape[0] - 1
-
-        peak_layers.append(int(peak_layer_idx))
-        dist_to_subject_last.append(abs(int(peak_token_idx) - subject_last_idx))
-        dist_to_last_token.append(abs(int(peak_token_idx) - last_token_idx))
-
-    return {
-        "peak_layers": peak_layers,
-        "dist_to_subject_last": dist_to_subject_last,
-        "dist_to_last_token": dist_to_last_token,
-    }
-
-
-def counts_from_values(values: List[int]) -> Tuple[List[int], List[int]]:
-    counter = Counter(values)
-    xs = sorted(counter)
-    ys = [counter[x] for x in xs]
-    return xs, ys
-
-
-def plot_peak_layer_distribution(
-    stats: dict, kind: Optional[str], output_path: Path, case_count: int
-) -> None:
-    xs, ys = counts_from_values(stats["peak_layers"])
-
-    with plt.rc_context(rc={"font.family": "Liberation Serif"}):
-        fig, ax = plt.subplots(figsize=(6.5, 3.0), dpi=200)
-        ax.bar(xs, ys, color="#4C72B0")
-        ax.set_xlabel("Layer of maximum Δp")
-        ax.set_ylabel("Count")
-        ax.set_title(
-            f"Peak layer distribution ({KIND_LABELS[kind]}, n={case_count})"
-        )
-        fig.tight_layout()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, bbox_inches="tight")
-        plt.close(fig)
-
-
-def plot_peak_distance_distribution(
-    stats: dict, kind: Optional[str], output_path: Path, case_count: int
-) -> None:
-    xs_subject, ys_subject = counts_from_values(stats["dist_to_subject_last"])
-    xs_last, ys_last = counts_from_values(stats["dist_to_last_token"])
-
-    with plt.rc_context(rc={"font.family": "Liberation Serif"}):
-        fig, axes = plt.subplots(1, 2, figsize=(9.0, 3.0), dpi=200)
-
-        axes[0].bar(xs_subject, ys_subject, color="#55A868")
-        axes[0].set_xlabel("|peak token - subject last|")
-        axes[0].set_ylabel("Count")
-        axes[0].set_title("Distance to subject last")
-
-        axes[1].bar(xs_last, ys_last, color="#C44E52")
-        axes[1].set_xlabel("|peak token - last token|")
-        axes[1].set_ylabel("Count")
-        axes[1].set_title("Distance to last token")
-
-        fig.suptitle(f"Peak token distance distributions ({KIND_LABELS[kind]}, n={case_count})")
-        fig.tight_layout()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, bbox_inches="tight")
-        plt.close(fig)
-
-
 def analyze_kind(
     cases: List[dict], kind: Optional[str], output_dir: Path, last_k: int
 ) -> None:
@@ -286,7 +210,6 @@ def analyze_kind(
         return
 
     heatmap, labels = aggregate_focus_token_heatmap(cases, last_k=last_k)
-    stats = collect_peak_statistics(cases)
     kind_name = KIND_LABELS[kind]
 
     plot_focus_token_heatmap(
@@ -294,18 +217,6 @@ def analyze_kind(
         labels,
         kind,
         output_dir / f"focus_heatmap_{kind_name}.pdf",
-        len(cases),
-    )
-    plot_peak_layer_distribution(
-        stats,
-        kind,
-        output_dir / f"peak_layer_distribution_{kind_name}.pdf",
-        len(cases),
-    )
-    plot_peak_distance_distribution(
-        stats,
-        kind,
-        output_dir / f"peak_distance_distribution_{kind_name}.pdf",
         len(cases),
     )
 
