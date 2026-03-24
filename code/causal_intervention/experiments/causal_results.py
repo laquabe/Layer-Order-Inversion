@@ -1,5 +1,4 @@
 import argparse
-import os
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -7,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from matplotlib import pyplot as plt
+from tqdm import tqdm
 
 
 KIND_LABELS = {
@@ -83,8 +83,9 @@ def normalize_labels(raw_labels) -> List[str]:
 
 def load_case_results(cases_dir: Path) -> Dict[Optional[str], List[dict]]:
     grouped_cases: Dict[Optional[str], List[dict]] = defaultdict(list)
+    case_paths = sorted(cases_dir.glob("knowledge_*.npz"))
 
-    for path in sorted(cases_dir.glob("knowledge_*.npz")):
+    for path in tqdm(case_paths, desc="Loading causal trace cases"):
         known_id = extract_known_id(path)
         if known_id is None:
             continue
@@ -145,18 +146,30 @@ def plot_focus_token_heatmap(
     output_path: Path,
     case_count: int,
 ) -> None:
+    cmap = {None: "Purples", "mlp": "Greens", "attn": "Reds"}[kind]
+
     with plt.rc_context(rc={"font.family": "Liberation Serif"}):
-        fig, ax = plt.subplots(figsize=(6.5, 2.6), dpi=200)
-        image = ax.imshow(heatmap, aspect="auto", cmap="viridis")
-        ax.set_yticks(range(len(y_labels)))
+        fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
+        image = ax.pcolor(heatmap, cmap=cmap, vmin=0)
+        ax.invert_yaxis()
+        ax.set_yticks([0.5 + i for i in range(len(y_labels))])
         ax.set_yticklabels(y_labels)
-        ax.set_xticks(range(0, heatmap.shape[1], max(1, heatmap.shape[1] // 10)))
-        ax.set_xlabel("Layer")
-        ax.set_title(
-            f"Mean Δp heatmap for key token positions ({KIND_LABELS[kind]}, n={case_count})"
-        )
-        cbar = plt.colorbar(image, ax=ax)
-        cbar.ax.set_title("Δp", fontsize=9)
+        xtick_positions = [0.5 + i for i in range(0, max(1, heatmap.shape[1] - 1), 5)]
+        xtick_labels = list(range(0, max(1, heatmap.shape[1] - 1), 5))
+        if not xtick_positions:
+            xtick_positions = [0.5]
+            xtick_labels = [0]
+        ax.set_xticks(xtick_positions)
+        ax.set_xticklabels(xtick_labels)
+        if kind is None:
+            ax.set_title("Impact of aggregated key-token states")
+            ax.set_xlabel("single restored layer within GPT")
+        else:
+            kind_name = "MLP" if kind == "mlp" else "Attn"
+            ax.set_title(f"Impact of aggregated key-token {kind_name} states")
+            ax.set_xlabel(f"center of interval of patched {kind_name} layers")
+        cbar = plt.colorbar(image)
+        cbar.ax.set_title("mean Δp", y=-0.16, fontsize=10)
         fig.tight_layout()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(output_path, bbox_inches="tight")
@@ -241,6 +254,7 @@ def plot_peak_distance_distribution(
 
 def analyze_kind(cases: List[dict], kind: Optional[str], output_dir: Path) -> None:
     if not cases:
+        tqdm.write(f"Skipping kind={KIND_LABELS[kind]} because no valid cases were found.")
         return
 
     heatmap, labels = aggregate_focus_token_heatmap(cases)
@@ -278,7 +292,10 @@ def main() -> None:
     )
 
     grouped_cases = load_case_results(cases_dir)
-    for kind in [None, "mlp", "attn"]:
+    for kind in tqdm([None, "mlp", "attn"], desc="Analyzing kinds"):
+        tqdm.write(
+            f"Analyzing kind={KIND_LABELS[kind]} with {len(grouped_cases.get(kind, []))} valid cases"
+        )
         analyze_kind(grouped_cases.get(kind, []), kind, output_dir)
 
     print(f"Saved analysis plots to: {output_dir}")
