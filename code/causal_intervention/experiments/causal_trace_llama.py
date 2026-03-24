@@ -26,6 +26,7 @@ from util.runningstats import Covariance, tally
 
 PROMPT_PATCH_TOKEN_COUNT = 10
 DEFAULT_LLAMA3_PATH = "/data/share_weight/Meta-Llama-3-8B-Instruct"
+DEFAULT_LLAMA3_REMOTE = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 
 def main():
@@ -44,9 +45,10 @@ def main():
 
     aa(
         "--model_name",
-        default=DEFAULT_LLAMA3_PATH,
+        default=DEFAULT_LLAMA3_REMOTE,
         help="Local path or HF name for the Llama 3 model.",
     )
+    aa("--local", action="store_true", help="Load model from local path instead of remote HF name.")
     aa("--fact_file", default=None)
     aa("--output_dir", default="results/{model_name}/causal_trace")
     aa("--noise_level", default="s3", type=parse_noise_rule)
@@ -62,7 +64,7 @@ def main():
     os.makedirs(pdf_dir, exist_ok=True)
 
     torch_dtype = torch.float16
-    mt = ModelAndTokenizer(args.model_name, torch_dtype=torch_dtype)
+    mt = ModelAndTokenizer(args.model_name, torch_dtype=torch_dtype, local=args.local)
 
     if args.fact_file is None:
         knowns = KnownsDataset(DATA_DIR)
@@ -464,12 +466,13 @@ class ModelAndTokenizer:
         tokenizer=None,
         low_cpu_mem_usage=False,
         torch_dtype=None,
+        local=False,
     ):
         local_model_paths = {
             "Meta-Llama-3-8B-Instruct": DEFAULT_LLAMA3_PATH,
-            DEFAULT_LLAMA3_PATH: DEFAULT_LLAMA3_PATH,
+            DEFAULT_LLAMA3_REMOTE: DEFAULT_LLAMA3_PATH,
         }
-        model_path = local_model_paths.get(model_name, model_name)
+        model_path = local_model_paths.get(model_name, model_name) if local else model_name
 
         if tokenizer is None:
             assert model_path is not None
