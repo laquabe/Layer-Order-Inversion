@@ -136,15 +136,19 @@ def aggregate_focus_token_heatmap(
         scores = case["scores"]
         num_subject_tokens = case["num_subject_tokens"]
         subject_last_idx = num_subject_tokens - 1
-        available_tail_tokens = scores.shape[0] - num_subject_tokens
 
         row_buckets[0].append(scores[0, :])
         row_buckets[1].append(scores[subject_last_idx, :])
 
-        usable_k = min(last_k, available_tail_tokens)
-        for offset in range(1, usable_k + 1):
+        collected = 0
+        for offset in range(1, scores.shape[0] + 1):
             token_idx = scores.shape[0] - offset
-            row_buckets[1 + offset].append(scores[token_idx, :])
+            if token_idx <= subject_last_idx:
+                break
+            collected += 1
+            if collected > last_k:
+                break
+            row_buckets[1 + collected].append(scores[token_idx, :])
 
     mean_rows = []
     final_labels = []
