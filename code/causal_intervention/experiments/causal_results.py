@@ -15,12 +15,6 @@ KIND_LABELS = {
     "attn": "attn",
 }
 
-FOCUS_TOKEN_NAMES = [
-    "subject_first",
-    "subject_last",
-    "last_token",
-]
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -34,6 +28,12 @@ def parse_args() -> argparse.Namespace:
         "--output_dir",
         default=None,
         help="Directory to save aggregated plots. Defaults to <result_dir>/analysis or <run_dir>/analysis.",
+    )
+    parser.add_argument(
+        "--last_k",
+        type=int,
+        default=3,
+        help="How many question-end tokens to include in the aggregated heatmap, counted backward from the last token without overlapping subject tokens.",
     )
     return parser.parse_args()
 
@@ -123,20 +123,42 @@ def load_case_results(cases_dir: Path) -> Dict[Optional[str], List[dict]]:
     return grouped_cases
 
 
-def aggregate_focus_token_heatmap(cases: List[dict]) -> Tuple[np.ndarray, List[str]]:
-    heatmaps = []
+def aggregate_focus_token_heatmap(
+    cases: List[dict], last_k: int
+) -> Tuple[np.ndarray, List[str]]:
+    if last_k <= 0:
+        raise ValueError("last_k must be positive.")
+
+    row_buckets: List[List[np.ndarray]] = [[] for _ in range(2 + last_k)]
+    row_labels = ["subject_first", "subject_last"] + [f"last_{k}" for k in range(1, last_k + 1)]
 
     for case in cases:
         scores = case["scores"]
         num_subject_tokens = case["num_subject_tokens"]
-        focus_indices = [0, num_subject_tokens - 1, scores.shape[0] - 1]
-        heatmaps.append(scores[focus_indices, :])
+        subject_last_idx = num_subject_tokens - 1
+        available_tail_tokens = scores.shape[0] - num_subject_tokens
 
-    if not heatmaps:
+        row_buckets[0].append(scores[0, :])
+        row_buckets[1].append(scores[subject_last_idx, :])
+
+        usable_k = min(last_k, available_tail_tokens)
+        for offset in range(1, usable_k + 1):
+            token_idx = scores.shape[0] - offset
+            row_buckets[1 + offset].append(scores[token_idx, :])
+
+    mean_rows = []
+    final_labels = []
+    for label, bucket in zip(row_labels, row_buckets):
+        if not bucket:
+            continue
+        mean_rows.append(np.mean(np.stack(bucket, axis=0), axis=0))
+        final_labels.append(label)
+
+    if not mean_rows:
         raise ValueError("No valid cases provided for heatmap aggregation.")
 
-    mean_heatmap = np.mean(np.stack(heatmaps, axis=0), axis=0)
-    return mean_heatmap, FOCUS_TOKEN_NAMES
+    mean_heatmap = np.stack(mean_rows, axis=0)
+    return mean_heatmap, final_labels
 
 
 def plot_focus_token_heatmap(
@@ -252,12 +274,14 @@ def plot_peak_distance_distribution(
         plt.close(fig)
 
 
-def analyze_kind(cases: List[dict], kind: Optional[str], output_dir: Path) -> None:
+def analyze_kind(
+    cases: List[dict], kind: Optional[str], output_dir: Path, last_k: int
+) -> None:
     if not cases:
         tqdm.write(f"Skipping kind={KIND_LABELS[kind]} because no valid cases were found.")
         return
 
-    heatmap, labels = aggregate_focus_token_heatmap(cases)
+    heatmap, labels = aggregate_focus_token_heatmap(cases, last_k=last_k)
     stats = collect_peak_statistics(cases)
     kind_name = KIND_LABELS[kind]
 
@@ -296,7 +320,7 @@ def main() -> None:
         tqdm.write(
             f"Analyzing kind={KIND_LABELS[kind]} with {len(grouped_cases.get(kind, []))} valid cases"
         )
-        analyze_kind(grouped_cases.get(kind, []), kind, output_dir)
+        analyze_kind(grouped_cases.get(kind, []), kind, output_dir, last_k=args.last_k)
 
     print(f"Saved analysis plots to: {output_dir}")
 
