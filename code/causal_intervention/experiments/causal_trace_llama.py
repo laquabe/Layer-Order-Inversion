@@ -25,7 +25,7 @@ from util.runningstats import Covariance, tally
 
 
 PROMPT_PATCH_TOKEN_COUNT = 10
-DEFAULT_LLAMA3_PATH = "/data/share_weight/Meta-Llama-3-8B-Instruct"
+DEFAULT_LLAMA3_PATH = "/data/xkliu/hf_models/Meta-Llama-3-8B-Instruct"
 DEFAULT_LLAMA3_REMOTE = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 
