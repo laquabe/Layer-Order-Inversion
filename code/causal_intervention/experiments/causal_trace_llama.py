@@ -571,40 +571,39 @@ def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=
     window = result.get("window", 10)
     labels = list(result.get("traced_labels", result["input_tokens"]))
 
-    with plt.rc_context(rc={"font.family": "Liberation Serif"}):
-        fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
-        h = ax.pcolor(
-            differences,
-            cmap={None: "Purples", "None": "Purples", "mlp": "Greens", "attn": "Reds"}[kind],
-            vmin=0,
-        )
-        ax.invert_yaxis()
-        ax.set_yticks([0.5 + i for i in range(len(differences))])
-        ax.set_xticks([0.5 + i for i in range(0, differences.shape[1] - 6, 5)])
-        ax.set_xticklabels(list(range(0, differences.shape[1] - 6, 5)))
-        ax.set_yticklabels(labels)
-        if not modelname:
-            modelname = "Llama"
-        if not kind:
-            ax.set_title("Impact of injecting corrupted states into clean run")
-            ax.set_xlabel(f"single restored layer within {modelname}")
-        else:
-            kindname = "MLP" if kind == "mlp" else "Attn"
-            ax.set_title(f"Impact of injecting corrupted {kindname} states into clean run")
-            ax.set_xlabel(f"center of interval of {window} patched {kindname} layers")
-        cb = plt.colorbar(h)
-        if title is not None:
-            ax.set_title(title)
-        if xlabel is not None:
-            ax.set_xlabel(xlabel)
-        elif answer is not None:
-            cb.ax.set_title(f"Δp({str(answer).strip()})", y=-0.16, fontsize=10)
-        if savepdf:
-            os.makedirs(os.path.dirname(savepdf), exist_ok=True)
-            plt.savefig(savepdf, bbox_inches="tight")
-            plt.close()
-        else:
-            plt.show()
+    fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
+    h = ax.pcolor(
+        differences,
+        cmap={None: "Purples", "None": "Purples", "mlp": "Greens", "attn": "Reds"}[kind],
+        vmin=0,
+    )
+    ax.invert_yaxis()
+    ax.set_yticks([0.5 + i for i in range(len(differences))])
+    ax.set_xticks([0.5 + i for i in range(0, differences.shape[1] - 6, 5)])
+    ax.set_xticklabels(list(range(0, differences.shape[1] - 6, 5)))
+    ax.set_yticklabels(labels)
+    if not modelname:
+        modelname = "Llama"
+    if not kind:
+        ax.set_title("Impact of injecting corrupted states into clean run")
+        ax.set_xlabel(f"single restored layer within {modelname}")
+    else:
+        kindname = "MLP" if kind == "mlp" else "Attn"
+        ax.set_title(f"Impact of injecting corrupted {kindname} states into clean run")
+        ax.set_xlabel(f"center of interval of {window} patched {kindname} layers")
+    cb = plt.colorbar(h)
+    if title is not None:
+        ax.set_title(title)
+    if xlabel is not None:
+        ax.set_xlabel(xlabel)
+    elif answer is not None:
+        cb.ax.set_title(f"Δp({str(answer).strip()})", y=-0.16, fontsize=10)
+    if savepdf:
+        os.makedirs(os.path.dirname(savepdf), exist_ok=True)
+        plt.savefig(savepdf, bbox_inches="tight")
+        plt.close()
+    else:
+        plt.show()
 
 
 def plot_all_flow(mt, prompt, subject=None):
