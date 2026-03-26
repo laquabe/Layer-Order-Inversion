@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from matplotlib import pyplot as plt
+from matplotlib.ticker import PercentFormatter
 from tqdm import tqdm
 
 
@@ -192,32 +193,31 @@ def plot_focus_token_heatmap(
 ) -> None:
     cmap = {None: "Purples", "mlp": "Greens", "attn": "Reds"}[kind]
 
-    with plt.rc_context(rc={"font.family": "Liberation Serif"}):
-        fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
-        image = ax.pcolor(heatmap, cmap=cmap, vmin=0)
-        ax.invert_yaxis()
-        ax.set_yticks([0.5 + i for i in range(len(y_labels))])
-        ax.set_yticklabels(y_labels)
-        xtick_positions = [0.5 + i for i in range(0, max(1, heatmap.shape[1] - 1), 5)]
-        xtick_labels = list(range(0, max(1, heatmap.shape[1] - 1), 5))
-        if not xtick_positions:
-            xtick_positions = [0.5]
-            xtick_labels = [0]
-        ax.set_xticks(xtick_positions)
-        ax.set_xticklabels(xtick_labels)
-        if kind is None:
-            ax.set_title("Impact of aggregated key-token states")
-            ax.set_xlabel("single restored layer within GPT")
-        else:
-            kind_name = "MLP" if kind == "mlp" else "Attn"
-            ax.set_title(f"Impact of aggregated key-token {kind_name} states")
-            ax.set_xlabel(f"center of interval of patched {kind_name} layers")
-        cbar = plt.colorbar(image)
-        cbar.ax.set_title("mean Δp", y=-0.16, fontsize=10)
-        fig.tight_layout()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, bbox_inches="tight")
-        plt.close(fig)
+    fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
+    image = ax.pcolor(heatmap, cmap=cmap, vmin=0)
+    ax.invert_yaxis()
+    ax.set_yticks([0.5 + i for i in range(len(y_labels))])
+    ax.set_yticklabels(y_labels)
+    xtick_positions = [0.5 + i for i in range(0, max(1, heatmap.shape[1] - 1), 5)]
+    xtick_labels = list(range(0, max(1, heatmap.shape[1] - 1), 5))
+    if not xtick_positions:
+        xtick_positions = [0.5]
+        xtick_labels = [0]
+    ax.set_xticks(xtick_positions)
+    ax.set_xticklabels(xtick_labels)
+    if kind is None:
+        ax.set_title("Impact of aggregated key-token states")
+        ax.set_xlabel("single restored layer within GPT")
+    else:
+        kind_name = "MLP" if kind == "mlp" else "Attn"
+        ax.set_title(f"Impact of aggregated key-token {kind_name} states")
+        ax.set_xlabel(f"center of interval of patched {kind_name} layers")
+    cbar = plt.colorbar(image)
+    cbar.ax.set_title("mean Δp", y=-0.16, fontsize=10)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
 
 
 def collect_case_ratio_components(case: dict, last_k: int) -> Optional[Tuple[float, float]]:
@@ -285,59 +285,50 @@ def plot_subset_ratio_comparison(
     colors = {None: "#8172B2", "mlp": "#55A868", "attn": "#C44E52"}
 
     x = np.arange(len(subset_names))
-    width = 0.22
 
-    with plt.rc_context(rc={"font.family": "Liberation Serif"}):
-        fig, ax = plt.subplots(figsize=(8.0, 3.8), dpi=200)
+    fig, ax = plt.subplots(figsize=(7.2, 3.8), dpi=200)
 
-        for idx, kind in enumerate(kinds):
-            values = [subset_scores[name].get(kind) for name in subset_names]
-            numeric_values = [0.0 if value is None else value for value in values]
-            positions = x + (idx - 1) * width
-            bars = ax.bar(
-                positions,
-                numeric_values,
-                width=width,
-                color=colors[kind],
-                label=kind_display[kind],
-            )
-            for bar, value in zip(bars, values):
-                if value is None:
-                    ax.text(
-                        bar.get_x() + bar.get_width() / 2,
-                        0.005,
-                        "N/A",
-                        ha="center",
-                        va="bottom",
-                        fontsize=8,
-                        rotation=90,
-                    )
-                else:
-                    ax.text(
-                        bar.get_x() + bar.get_width() / 2,
-                        bar.get_height(),
-                        f"{value * 100:.2f}%",
-                        ha="center",
-                        va="bottom",
-                        fontsize=8,
-                    )
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+    ax.spines["left"].set_linewidth(0.8)
+    ax.spines["bottom"].set_linewidth(0.8)
+    ax.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.35)
+    ax.set_axisbelow(True)
 
-        ax.set_xticks(x)
-        ax.set_xticklabels(subset_names)
-        ax.set_ylabel("Mean(last-k max) / Mean(subject-last max)")
-        ax.set_title("Cross-subset comparison of aggregated tail-token interference ratios")
-        ax.legend(frameon=False)
-        ymax = 0.0
-        for subset in subset_scores.values():
-            for value in subset.values():
-                if value is not None:
-                    ymax = max(ymax, value)
-        ax.set_ylim(0, max(0.1, ymax * 1.18))
+    markers = {None: "o", "mlp": "s", "attn": "^"}
 
-        fig.tight_layout()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(output_path, bbox_inches="tight")
-        plt.close(fig)
+    for kind in kinds:
+        values = [subset_scores[name].get(kind) for name in subset_names]
+        numeric_values = [np.nan if value is None else value for value in values]
+        ax.plot(
+            x,
+            numeric_values,
+            color=colors[kind],
+            marker=markers[kind],
+            linewidth=2.0,
+            markersize=5.5,
+            label=kind_display[kind],
+        )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(subset_names)
+    ax.set_ylabel("Interference ratio (%)")
+    ax.set_xlabel("Hop subset")
+    ax.set_title("Tail-token interference across hop subsets")
+    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=0))
+    ax.legend(frameon=False, ncol=3, loc="upper left")
+
+    ymax = 0.0
+    for subset in subset_scores.values():
+        for value in subset.values():
+            if value is not None:
+                ymax = max(ymax, value)
+    ax.set_ylim(0, max(0.1, ymax * 1.15))
+
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, bbox_inches="tight")
+    plt.close(fig)
 
 
 def analyze_kind(
