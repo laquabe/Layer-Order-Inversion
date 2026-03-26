@@ -193,28 +193,37 @@ def plot_focus_token_heatmap(
 ) -> None:
     cmap = {None: "Purples", "mlp": "Greens", "attn": "Reds"}[kind]
 
-    fig, ax = plt.subplots(figsize=(3.5, 2), dpi=200)
+    fig, ax = plt.subplots(figsize=(4.3, 2.8), dpi=200)
     image = ax.pcolor(heatmap, cmap=cmap, vmin=0)
     ax.invert_yaxis()
     ax.set_yticks([0.5 + i for i in range(len(y_labels))])
-    ax.set_yticklabels(y_labels)
+    ax.set_yticklabels(y_labels, fontsize=9)
     xtick_positions = [0.5 + i for i in range(0, max(1, heatmap.shape[1] - 1), 5)]
     xtick_labels = list(range(0, max(1, heatmap.shape[1] - 1), 5))
     if not xtick_positions:
         xtick_positions = [0.5]
         xtick_labels = [0]
     ax.set_xticks(xtick_positions)
-    ax.set_xticklabels(xtick_labels)
+    ax.set_xticklabels(xtick_labels, fontsize=9)
     if kind is None:
-        ax.set_title("Impact of aggregated key-token states")
-        ax.set_xlabel("single restored layer within GPT")
+        ax.set_title("Impact of aggregated key-token states", fontsize=12, pad=8)
+        ax.set_xlabel("single restored layer within GPT", fontsize=10, labelpad=6)
     else:
         kind_name = "MLP" if kind == "mlp" else "Attn"
-        ax.set_title(f"Impact of aggregated key-token {kind_name} states")
-        ax.set_xlabel(f"center of interval of patched {kind_name} layers")
-    cbar = plt.colorbar(image)
-    cbar.ax.set_title("mean Δp", y=-0.16, fontsize=10)
-    fig.tight_layout()
+        ax.set_title(
+            f"Impact of aggregated key-token {kind_name} states",
+            fontsize=12,
+            pad=8,
+        )
+        ax.set_xlabel(
+            f"center of interval of patched {kind_name} layers",
+            fontsize=10,
+            labelpad=6,
+        )
+    cbar = plt.colorbar(image, ax=ax, fraction=0.05, pad=0.05)
+    cbar.ax.tick_params(labelsize=8)
+    cbar.set_label("mean Δp", fontsize=10, rotation=270, labelpad=12)
+    fig.subplots_adjust(left=0.28, right=0.88, bottom=0.32, top=0.83)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
