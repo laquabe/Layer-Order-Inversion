@@ -42,7 +42,13 @@ def parse_args() -> argparse.Namespace:
 
 
 class ModelAndTokenizer:
-    def __init__(self, model_name: str, local: bool = False, torch_dtype=None):
+    def __init__(
+        self,
+        model_name: str,
+        local: bool = False,
+        torch_dtype=None,
+        low_cpu_mem_usage: bool = False,
+    ):
         local_model_paths = {
             DEFAULT_GPTJ_REMOTE: DEFAULT_GPTJ_LOCAL,
             "gpt-j-6B": DEFAULT_GPTJ_LOCAL,
@@ -57,7 +63,7 @@ class ModelAndTokenizer:
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch_dtype,
-            low_cpu_mem_usage=True,
+            low_cpu_mem_usage=low_cpu_mem_usage,
         )
         nethook.set_requires_grad(False, model)
         model.eval().cuda()
