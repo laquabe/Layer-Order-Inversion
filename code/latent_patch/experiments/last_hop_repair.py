@@ -22,7 +22,12 @@ DEFAULT_GPTJ_REMOTE = "EleutherAI/gpt-j-6B"
 DEFAULT_GPTJ_LOCAL = "/data/xkliu/hf_models/gpt-j-6b"
 DEFAULT_LLAMA3_REMOTE = "meta-llama/Meta-Llama-3-8B-Instruct"
 DEFAULT_LLAMA3_LOCAL = "/data/xkliu/hf_models/Meta-Llama-3-8B-Instruct"
-MODULE_KINDS = [None, "mlp", "attn"]
+MODULE_NAMES = ["base", "mlp", "attn"]
+
+
+def is_llama_family_name(model_name: str) -> bool:
+    lowered = model_name.lower()
+    return "llama" in lowered or "meta-llama" in lowered
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,6 +54,8 @@ class ModelAndTokenizer:
         torch_dtype=None,
         low_cpu_mem_usage: bool = False,
     ):
+        self.model_name = model_name
+        self.is_llama_family = is_llama_family_name(model_name)
         local_model_paths = {
             DEFAULT_GPTJ_REMOTE: DEFAULT_GPTJ_LOCAL,
             "gpt-j-6B": DEFAULT_GPTJ_LOCAL,
@@ -56,10 +63,15 @@ class ModelAndTokenizer:
             "Meta-Llama-3-8B-Instruct": DEFAULT_LLAMA3_LOCAL,
         }
         model_path = local_model_paths.get(model_name, model_name) if local else model_name
-        tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.padding_side = "left"
+
+        if self.is_llama_family:
+            tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.padding_side = "left"
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(model_path)
+
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch_dtype,
@@ -122,8 +134,36 @@ def get_pad_token_id(tokenizer):
     return tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
 
 
+def module_kind(module_name: str) -> Optional[str]:
+    return None if module_name == "base" else module_name
+
+
+def encode_text(mt: ModelAndTokenizer, text: str) -> List[int]:
+    if mt.is_llama_family:
+        return mt.tokenizer.encode(text)
+    return mt.tokenizer.encode(text)
+
+
+def encode_without_special_tokens(mt: ModelAndTokenizer, text: str) -> List[int]:
+    if mt.is_llama_family:
+        return mt.tokenizer.encode(text, add_special_tokens=False)
+    return mt.tokenizer.encode(text, add_special_tokens=False)
+
+
+def tokenize_prompt(mt: ModelAndTokenizer, prompt: str) -> Dict[str, torch.Tensor]:
+    if mt.is_llama_family:
+        return mt.tokenizer(prompt, return_tensors="pt").to(mt.device)
+
+    token_ids = encode_text(mt, prompt)
+    attention_mask = [1] * len(token_ids)
+    return {
+        "input_ids": torch.tensor([token_ids], device=mt.device),
+        "attention_mask": torch.tensor([attention_mask], device=mt.device),
+    }
+
+
 def generate_answer(mt: ModelAndTokenizer, prompt: str, max_new_tokens: int) -> str:
-    inputs = mt.tokenizer(prompt, return_tensors="pt").to(mt.device)
+    inputs = tokenize_prompt(mt, prompt)
     with torch.no_grad():
         outputs = mt.model.generate(
             **inputs,
@@ -137,35 +177,115 @@ def generate_answer(mt: ModelAndTokenizer, prompt: str, max_new_tokens: int) -> 
 
 
 def get_prompt_token_count(mt: ModelAndTokenizer, prompt: str) -> int:
-    return len(mt.tokenizer.encode(prompt))
-
-
-def module_label(kind: Optional[str]) -> str:
-    return "base" if kind is None else kind
+    inputs = tokenize_prompt(mt, prompt)
+    return int(inputs["input_ids"].shape[1])
 
 
 def collect_donor_states(mt: ModelAndTokenizer, prompt: str, last_k: int) -> Dict[str, object]:
-    token_count = get_prompt_token_count(mt, prompt)
+    inputs = tokenize_prompt(mt, prompt)
+    token_count = int(inputs["input_ids"].shape[1])
     effective_k = min(last_k, token_count)
     trace_layers = []
-    for kind in MODULE_KINDS:
+    for module_name in MODULE_NAMES:
+        kind = module_kind(module_name)
         for layer in range(mt.num_layers):
             trace_layers.append(layername(mt.model, layer, kind))
-    inputs = mt.tokenizer(prompt, return_tensors="pt").to(mt.device)
-    cache = {module_label(kind): {} for kind in MODULE_KINDS}
+    cache = {module_name: {} for module_name in MODULE_NAMES}
     with torch.no_grad(), nethook.TraceDict(mt.model, trace_layers, clone=True, detach=True) as td:
-        mt.model(**inputs)
-    for kind in MODULE_KINDS:
-        label = module_label(kind)
+        mt.model(**inputs, use_cache=True, return_dict=True)
+    for module_name in MODULE_NAMES:
+        kind = module_kind(module_name)
         for layer in range(mt.num_layers):
             lname = layername(mt.model, layer, kind)
             output = untuple(td[lname].output)[0]
-            cache[label][layer] = output[-effective_k:].detach().cpu()
+            cache[module_name][layer] = output[-effective_k:].detach().cpu()
     return {
         "states": cache,
         "effective_k": effective_k,
         "prompt_token_count": token_count,
     }
+
+
+def generate_from_patched_state(
+    mt: ModelAndTokenizer,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    past_key_values,
+    logits: torch.Tensor,
+    max_new_tokens: int,
+) -> str:
+    eos_token_id = mt.tokenizer.eos_token_id
+    generated_tokens = []
+    current_logits = logits[:, -1, :]
+    current_past = past_key_values
+    current_attention_mask = attention_mask
+
+    for _ in range(max_new_tokens):
+        next_token = torch.argmax(current_logits, dim=-1, keepdim=True)
+        token_id = int(next_token[0, 0].item())
+        if eos_token_id is not None and token_id == eos_token_id:
+            break
+        generated_tokens.append(token_id)
+        current_attention_mask = torch.cat(
+            [
+                current_attention_mask,
+                torch.ones(
+                    (current_attention_mask.shape[0], 1),
+                    dtype=current_attention_mask.dtype,
+                    device=current_attention_mask.device,
+                ),
+            ],
+            dim=1,
+        )
+        with torch.no_grad():
+            outputs = mt.model(
+                input_ids=next_token,
+                attention_mask=current_attention_mask,
+                past_key_values=current_past,
+                use_cache=True,
+                return_dict=True,
+            )
+        current_past = outputs.past_key_values
+        current_logits = outputs.logits[:, -1, :]
+
+    if not generated_tokens:
+        return ""
+    return mt.tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
+
+
+def patched_prefill_forward(
+    mt: ModelAndTokenizer,
+    prompt: str,
+    donor_cache: dict,
+    token_offset: int,
+    layer: int,
+    module_name: str,
+):
+    kind = module_kind(module_name)
+    donor_tensor = donor_cache["states"][module_name][layer][-(token_offset)]
+    inputs = tokenize_prompt(mt, prompt)
+    prompt_token_count = int(inputs["input_ids"].shape[1])
+    patch_index = prompt_token_count - token_offset
+    target_layer = layername(mt.model, layer, kind)
+
+    def edit_output(output, layer):
+        if layer != target_layer:
+            return output
+        hidden = untuple(output)
+        if hidden.shape[1] != prompt_token_count:
+            return output
+        if patch_index < 0 or hidden.shape[1] <= patch_index:
+            return output
+        hidden[:, patch_index, :] = donor_tensor.to(hidden.device, dtype=hidden.dtype)
+        return output
+
+    with torch.no_grad(), nethook.TraceDict(mt.model, [target_layer], edit_output=edit_output):
+        outputs = mt.model(
+            **inputs,
+            use_cache=True,
+            return_dict=True,
+        )
+    return inputs, outputs
 
 
 def patch_generation(
@@ -174,35 +294,25 @@ def patch_generation(
     donor_cache: dict,
     token_offset: int,
     layer: int,
-    kind: Optional[str],
+    module_name: str,
     max_new_tokens: int,
 ) -> str:
-    module = module_label(kind)
-    donor_tensor = donor_cache["states"][module][layer][-(token_offset)]
-    prompt_token_count = get_prompt_token_count(mt, prompt)
-    patch_index = prompt_token_count - token_offset
-    target_layer = layername(mt.model, layer, kind)
-
-    def edit_output(output, layer):
-        if layer != target_layer:
-            return output
-        hidden = untuple(output)
-        if patch_index < 0 or hidden.shape[1] <= patch_index:
-            return output
-        hidden[:, patch_index, :] = donor_tensor.to(hidden.device, dtype=hidden.dtype)
-        return output
-
-    inputs = mt.tokenizer(prompt, return_tensors="pt").to(mt.device)
-    with torch.no_grad(), nethook.TraceDict(mt.model, [target_layer], edit_output=edit_output):
-        outputs = mt.model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            temperature=0.0,
-            do_sample=False,
-            pad_token_id=get_pad_token_id(mt.tokenizer),
-        )
-    generated_ids = outputs[0][inputs["input_ids"].shape[1] :]
-    return mt.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+    inputs, outputs = patched_prefill_forward(
+        mt,
+        prompt,
+        donor_cache,
+        token_offset=token_offset,
+        layer=layer,
+        module_name=module_name,
+    )
+    return generate_from_patched_state(
+        mt,
+        input_ids=inputs["input_ids"],
+        attention_mask=inputs["attention_mask"],
+        past_key_values=outputs.past_key_values,
+        logits=outputs.logits,
+        max_new_tokens=max_new_tokens,
+    )
 
 
 def evaluate_case(
@@ -242,7 +352,7 @@ def evaluate_case(
     effective_k = min(donor_cache["effective_k"], get_prompt_token_count(mt, target_prompt))
     rows = []
     for token_offset in range(1, effective_k + 1):
-        for kind in MODULE_KINDS:
+        for module_name in MODULE_NAMES:
             for layer in range(mt.num_layers):
                 patched_generation = patch_generation(
                     mt,
@@ -250,7 +360,7 @@ def evaluate_case(
                     donor_cache,
                     token_offset=token_offset,
                     layer=layer,
-                    kind=kind,
+                    module_name=module_name,
                     max_new_tokens=max_new_tokens,
                 )
                 patched_correct = check_contains(patched_generation, target_golds)
@@ -258,11 +368,11 @@ def evaluate_case(
                     {
                         **meta,
                         "token_offset": -token_offset,
-                        "module": module_label(kind),
+                        "module": module_name,
                         "layer": layer,
                         "patched_generation": patched_generation,
                         "patched_is_correct": patched_correct,
-                        "is_repaired": patched_correct,
+                        "is_repaired": (not baseline_correct) and patched_correct,
                     }
                 )
     meta["effective_k"] = effective_k
