@@ -42,6 +42,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_new_tokens", type=int, default=64)
     parser.add_argument("--max_cases", type=int, default=None)
     parser.add_argument("--start_index", type=int, default=0)
+    parser.add_argument(
+        "--layers",
+        type=str,
+        default=None,
+        help="Comma-separated layer indices to run, e.g. 5,10,15. Defaults to 5,10,15,...",
+    )
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
@@ -119,6 +125,41 @@ def load_cases(path: str) -> List[dict]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     return data if isinstance(data, list) else [data]
+
+
+def slugify_subject(text: Optional[str]) -> str:
+    if not text:
+        return "unknown_subject"
+    text = re.sub(r"[^A-Za-z0-9]+", "_", text).strip("_")
+    return text or "unknown_subject"
+
+
+def build_case_filename(meta: dict) -> str:
+    known_id = meta.get("known_id")
+    known_part = f"knowledge_{known_id}" if known_id is not None else "knowledge_unknown"
+    subject_part = slugify_subject(meta.get("subject"))
+    return f"{known_part}_{subject_part}.json"
+
+
+def parse_layer_list(layer_text: Optional[str], num_layers: int) -> List[int]:
+    if layer_text is not None:
+        values = []
+        for piece in layer_text.split(","):
+            piece = piece.strip()
+            if not piece:
+                continue
+            layer = int(piece)
+            if 0 <= layer < num_layers:
+                values.append(layer)
+        values = sorted(set(values))
+        if not values:
+            raise ValueError("No valid layers found in --layers")
+        return values
+
+    values = list(range(5, num_layers, 5))
+    if not values:
+        values = [min(num_layers - 1, 0)] if num_layers > 0 else []
+    return values
 
 
 def check_contains(pred: str, gold_list: List[str]) -> bool:
@@ -320,6 +361,7 @@ def evaluate_case(
     case: dict,
     last_k: int,
     max_new_tokens: int,
+    layers_to_run: List[int],
 ) -> Tuple[dict, List[dict]]:
     donor = case["single_hops"][-1]
     donor_prompt = format_qa_prompt(donor["question"])
@@ -336,6 +378,7 @@ def evaluate_case(
     meta = {
         "case_id": case.get("case_id"),
         "known_id": case.get("known_id"),
+        "subject": case.get("subject"),
         "source_question_index": case.get("source_question_index"),
         "single_hop_question": donor["question"],
         "multi_hop_question": target_question,
@@ -344,8 +387,19 @@ def evaluate_case(
         "baseline_generation": baseline_generation,
         "baseline_is_correct": baseline_correct,
         "last_k_requested": last_k,
+        "layers_to_run": layers_to_run,
     }
-    if (not donor_correct) or baseline_correct:
+    if not donor_correct:
+        print(
+            f"[Skip] donor single-hop incorrect | case_id={case.get('case_id')} "
+            f"known_id={case.get('known_id')} | question={donor['question']}"
+        )
+        return meta, []
+    if baseline_correct:
+        print(
+            f"[Skip] baseline multi-hop already correct | case_id={case.get('case_id')} "
+            f"known_id={case.get('known_id')} | question={target_question}"
+        )
         return meta, []
 
     donor_cache = collect_donor_states(mt, donor_prompt, last_k=last_k)
@@ -353,7 +407,7 @@ def evaluate_case(
     rows = []
     for token_offset in range(1, effective_k + 1):
         for module_name in MODULE_NAMES:
-            for layer in range(mt.num_layers):
+            for layer in layers_to_run:
                 patched_generation = patch_generation(
                     mt,
                     target_prompt,
@@ -392,10 +446,19 @@ def save_jsonl(path: Path, rows: List[dict]):
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def save_case_result(cases_dir: Path, meta: dict, rows: List[dict]) -> None:
+    cases_dir.mkdir(parents=True, exist_ok=True)
+    filename = build_case_filename(meta)
+    payload = {"meta": meta, "rows": rows}
+    with (cases_dir / filename).open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
 def main() -> None:
     args = parse_args()
     modeldir = args.model_name.replace("/", "_")
     output_dir = Path(args.output_dir.format(model_name=modeldir))
+    cases_dir = output_dir / "cases"
     results_file = output_dir / "results.jsonl"
     if results_file.exists() and not args.overwrite:
         raise FileExistsError(f"{results_file} already exists. Use --overwrite to replace it.")
@@ -407,6 +470,7 @@ def main() -> None:
         local=args.local,
         torch_dtype=torch.float16 if use_fp16 else None,
     )
+    layers_to_run = parse_layer_list(args.layers, mt.num_layers)
     cases = load_cases(args.input_file)
     sliced = cases[args.start_index :]
     if args.max_cases is not None:
@@ -421,10 +485,18 @@ def main() -> None:
         "eligible_cases": 0,
         "repaired_cases": 0,
         "repair_rows": 0,
+        "layers_to_run": layers_to_run,
     }
 
     for case in tqdm(sliced, desc="Running last-hop repair"):
-        meta, rows = evaluate_case(mt, case, last_k=args.last_k, max_new_tokens=args.max_new_tokens)
+        meta, rows = evaluate_case(
+            mt,
+            case,
+            last_k=args.last_k,
+            max_new_tokens=args.max_new_tokens,
+            layers_to_run=layers_to_run,
+        )
+        save_case_result(cases_dir, meta, rows)
         summaries.append(meta)
         if meta["donor_is_correct"]:
             counts["donor_correct"] += 1
