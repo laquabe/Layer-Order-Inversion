@@ -302,6 +302,17 @@ def evaluate_case(
         )
 
     eligible = (not baseline_correct) and ((single_hop_passed is not False) if check_single_hops else True)
+    if baseline_correct:
+        print(
+            f"[Skip] baseline multi-hop already correct | case_id={case.get('case_id')} "
+            f"known_id={case.get('known_id')} | question={target_question}"
+        )
+    elif check_single_hops and single_hop_passed is False:
+        print(
+            f"[Skip] single-hop check failed | case_id={case.get('case_id')} "
+            f"known_id={case.get('known_id')} | question={target_question}"
+        )
+
     if eligible:
         expanded_generation = generate_answer(mt, expanded_prompt, max_new_tokens=max_new_tokens)
         expanded_correct = check_contains(expanded_generation, target_golds)
