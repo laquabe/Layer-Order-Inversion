@@ -5,8 +5,15 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List
 
+import matplotlib.pyplot as plt
+
 
 MODULE_NAMES = ["base", "mlp", "attn"]
+MODULE_CMAPS = {
+    "base": "Purples",
+    "mlp": "Greens",
+    "attn": "Reds",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -154,6 +161,72 @@ def write_tables_json(output_path: Path, tables: Dict[str, dict]) -> None:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
+def module_plot_color(module: str):
+    cmap_name = MODULE_CMAPS[module]
+    cmap = plt.get_cmap(cmap_name)
+    return cmap(0.75)
+
+
+def plot_per_offset_lines(output_dir: Path, tables: Dict[str, dict]) -> None:
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    all_offsets = []
+    for module in MODULE_NAMES:
+        all_offsets.extend(tables.get(module, {}).get("token_offsets", []))
+    unique_offsets = sorted(set(all_offsets), key=lambda x: abs(x))
+
+    for token_offset in unique_offsets:
+        fig, ax = plt.subplots(figsize=(5.0, 3.2), dpi=200)
+        has_any_series = False
+
+        for module in MODULE_NAMES:
+            table = tables.get(module)
+            if not table:
+                continue
+            if token_offset not in table["token_offsets"]:
+                continue
+
+            offset_idx = table["token_offsets"].index(token_offset)
+            layers = table["layers"]
+            values = table["values"][offset_idx]
+
+            filtered_layers = []
+            filtered_values = []
+            for layer, value in zip(layers, values):
+                if value is None:
+                    continue
+                filtered_layers.append(layer)
+                filtered_values.append(value)
+
+            if not filtered_layers:
+                continue
+
+            has_any_series = True
+            ax.plot(
+                filtered_layers,
+                filtered_values,
+                marker="o",
+                linewidth=2,
+                markersize=4,
+                color=module_plot_color(module),
+                label=module,
+            )
+
+        ax.set_xlabel("Layer")
+        ax.set_ylabel("Repair success rate")
+        ax.set_title(f"Repair accuracy by layer ({offset_label(token_offset)})")
+        ax.set_ylim(0.0, 1.0)
+        ax.grid(True, linestyle="--", alpha=0.3)
+
+        if has_any_series:
+            ax.legend()
+
+        fig.tight_layout()
+        fig.savefig(plots_dir / f"repair_rate_{offset_label(token_offset)}.png", bbox_inches="tight")
+        plt.close(fig)
+
+
 def main() -> None:
     args = parse_args()
     run_dir, jsonl_path = resolve_paths(args.result_path)
@@ -167,6 +240,7 @@ def main() -> None:
         write_module_csv(output_dir / f"acc_table_{module}.csv", table)
     write_tables_json(output_dir / "acc_tables.json", tables)
     write_summary(output_dir / "summary.json", len(rows), len(valid_rows), tables)
+    plot_per_offset_lines(output_dir, tables)
     print(f"Saved aggregated tables to: {output_dir}")
 
 
