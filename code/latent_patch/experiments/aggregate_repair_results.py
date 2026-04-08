@@ -179,6 +179,7 @@ def plot_per_offset_lines(output_dir: Path, tables: Dict[str, dict]) -> None:
     for token_offset in unique_offsets:
         fig, ax = plt.subplots(figsize=(5.0, 3.2), dpi=200)
         has_any_series = False
+        all_values = []
 
         for module in MODULE_NAMES:
             table = tables.get(module)
@@ -203,6 +204,7 @@ def plot_per_offset_lines(output_dir: Path, tables: Dict[str, dict]) -> None:
                 continue
 
             has_any_series = True
+            all_values.extend(filtered_values)
             ax.plot(
                 filtered_layers,
                 filtered_values,
@@ -216,7 +218,21 @@ def plot_per_offset_lines(output_dir: Path, tables: Dict[str, dict]) -> None:
         ax.set_xlabel("Layer")
         ax.set_ylabel("Repair success rate")
         ax.set_title(f"Repair accuracy by layer ({offset_label(token_offset)})")
-        ax.set_ylim(0.0, 1.0)
+
+        if all_values:
+            y_min = min(all_values)
+            y_max = max(all_values)
+            if y_min == y_max:
+                margin = max(0.02, abs(y_min) * 0.1, 0.01)
+            else:
+                margin = max((y_max - y_min) * 0.15, 0.01)
+            lower = max(0.0, y_min - margin)
+            upper = min(1.0, y_max + margin)
+            if lower >= upper:
+                lower = max(0.0, y_min - 0.05)
+                upper = min(1.0, y_max + 0.05)
+            ax.set_ylim(lower, upper)
+
         ax.grid(True, linestyle="--", alpha=0.3)
 
         if has_any_series:
