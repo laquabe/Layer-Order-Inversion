@@ -71,38 +71,40 @@ def aggregate_module_tables(rows: List[dict]) -> Dict[str, dict]:
     grouped = {
         module: defaultdict(lambda: {"correct": 0, "total": 0}) for module in MODULE_NAMES
     }
-    token_offsets = set()
+    patch_keys = set()
     layers = set()
 
     for row in rows:
         module = row.get("module")
         if module not in MODULE_NAMES:
             continue
-        token_offset = int(row["token_offset"])
+        token_offset = int(row.get("token_offset", 0))
+        patch_label = str(row.get("patch_label") or offset_label(token_offset))
         layer = int(row["layer"])
-        token_offsets.add(token_offset)
+        patch_keys.add((token_offset, patch_label))
         layers.add(layer)
-        key = (token_offset, layer)
+        key = (token_offset, patch_label, layer)
         grouped[module][key]["total"] += 1
         grouped[module][key]["correct"] += int(bool(row.get("patched_is_correct", False)))
 
-    sorted_offsets = sorted(token_offsets, key=lambda x: abs(x))
+    sorted_patch_keys = sorted(patch_keys, key=lambda item: (abs(item[0]), item[0], item[1]))
     sorted_layers = sorted(layers)
     tables = {}
 
     for module in MODULE_NAMES:
         matrix = []
-        for offset in sorted_offsets:
+        for token_offset, patch_label in sorted_patch_keys:
             row_values = []
             for layer in sorted_layers:
-                stats = grouped[module].get((offset, layer))
+                stats = grouped[module].get((token_offset, patch_label, layer))
                 if not stats or stats["total"] == 0:
                     row_values.append(None)
                 else:
                     row_values.append(stats["correct"] / stats["total"])
             matrix.append(row_values)
         tables[module] = {
-            "token_offsets": sorted_offsets,
+            "token_offsets": [item[0] for item in sorted_patch_keys],
+            "token_labels": [item[1] for item in sorted_patch_keys],
             "layers": sorted_layers,
             "values": matrix,
         }
@@ -110,6 +112,8 @@ def aggregate_module_tables(rows: List[dict]) -> Dict[str, dict]:
 
 
 def offset_label(token_offset: int) -> str:
+    if token_offset == 0:
+        return "subject_last"
     return f"last_{abs(token_offset)}"
 
 
@@ -118,9 +122,10 @@ def write_module_csv(output_path: Path, table: dict) -> None:
     with output_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["token_offset"] + [f"layer_{layer}" for layer in table["layers"]])
-        for token_offset, values in zip(table["token_offsets"], table["values"]):
+        token_labels = table.get("token_labels") or [offset_label(x) for x in table["token_offsets"]]
+        for token_label, values in zip(token_labels, table["values"]):
             writer.writerow(
-                [offset_label(token_offset)]
+                [token_label]
                 + ["" if value is None else f"{value:.6f}" for value in values]
             )
 
@@ -152,7 +157,8 @@ def write_tables_json(output_path: Path, tables: Dict[str, dict]) -> None:
     for module, table in tables.items():
         payload[module] = {
             "token_offsets": table["token_offsets"],
-            "token_labels": [offset_label(x) for x in table["token_offsets"]],
+            "token_labels": table.get("token_labels")
+            or [offset_label(x) for x in table["token_offsets"]],
             "layers": table["layers"],
             "values": table["values"],
         }
@@ -174,6 +180,13 @@ def plot_per_offset_lines(output_dir: Path, tables: Dict[str, dict]) -> None:
     all_offsets = []
     for module in MODULE_NAMES:
         all_offsets.extend(tables.get(module, {}).get("token_offsets", []))
+    token_label_map = {}
+    for module in MODULE_NAMES:
+        table = tables.get(module, {})
+        for token_offset, token_label in zip(
+            table.get("token_offsets", []), table.get("token_labels", [])
+        ):
+            token_label_map[token_offset] = token_label
     unique_offsets = sorted(set(all_offsets), key=lambda x: abs(x))
 
     for token_offset in unique_offsets:
@@ -217,7 +230,8 @@ def plot_per_offset_lines(output_dir: Path, tables: Dict[str, dict]) -> None:
 
         ax.set_xlabel("Layer")
         ax.set_ylabel("Repair success rate")
-        ax.set_title(f"Repair accuracy by layer ({offset_label(token_offset)})")
+        plot_label = token_label_map.get(token_offset, offset_label(token_offset))
+        ax.set_title(f"Repair accuracy by layer ({plot_label})")
 
         if all_values:
             y_min = min(all_values)
@@ -239,7 +253,7 @@ def plot_per_offset_lines(output_dir: Path, tables: Dict[str, dict]) -> None:
             ax.legend()
 
         fig.tight_layout()
-        fig.savefig(plots_dir / f"repair_rate_{offset_label(token_offset)}.png", bbox_inches="tight")
+        fig.savefig(plots_dir / f"repair_rate_{plot_label}.png", bbox_inches="tight")
         plt.close(fig)
 
 

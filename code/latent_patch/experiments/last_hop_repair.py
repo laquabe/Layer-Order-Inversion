@@ -38,6 +38,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", default="results/{model_name}/last_hop_repair")
     parser.add_argument("--model_name", default=DEFAULT_GPTJ_REMOTE)
     parser.add_argument("--local", action="store_true")
+    parser.add_argument(
+        "--patch_position",
+        choices=["last_k", "subject_last"],
+        default="last_k",
+        help="Whether to patch the last-k prompt-end tokens or the last subject token.",
+    )
     parser.add_argument("--last_k", type=int, default=3)
     parser.add_argument("--max_new_tokens", type=int, default=64)
     parser.add_argument("--max_cases", type=int, default=None)
@@ -203,6 +209,127 @@ def tokenize_prompt(mt: ModelAndTokenizer, prompt: str) -> Dict[str, torch.Tenso
     }
 
 
+def decode_tokens(mt: ModelAndTokenizer, token_array) -> List[str]:
+    if hasattr(token_array, "shape") and len(token_array.shape) > 1:
+        return [decode_tokens(mt, row) for row in token_array]
+    return [mt.tokenizer.decode([int(t)], skip_special_tokens=False) for t in token_array]
+
+
+def get_prepend_space(mt: ModelAndTokenizer) -> bool:
+    name = getattr(mt.tokenizer, "name_or_path", "")
+    return "llama-3" in name.lower() or "meta-llama-3" in name.lower()
+
+
+def find_token_span_by_search(
+    mt: ModelAndTokenizer,
+    input_ids: torch.Tensor,
+    substring: str,
+    prepend_space: bool = False,
+) -> Optional[Tuple[int, int]]:
+    candidate_strings = [substring]
+    if prepend_space and not substring.startswith(" "):
+        candidate_strings.append(" " + substring)
+
+    input_ids = torch.as_tensor(input_ids)
+    for candidate in candidate_strings:
+        substring_tokens = mt.tokenizer(
+            candidate,
+            add_special_tokens=False,
+            return_tensors="pt",
+        ).input_ids[0]
+        substring_tokens = substring_tokens.to(input_ids.device)
+        length = len(substring_tokens)
+        if length == 0:
+            continue
+        for start in range(len(input_ids) - length + 1):
+            end = start + length
+            if torch.all(input_ids[start:end] == substring_tokens):
+                return (start, end)
+    return None
+
+
+def find_token_span_by_offsets(
+    mt: ModelAndTokenizer, text: str, substring: str
+) -> Optional[Tuple[int, int]]:
+    try:
+        enc = mt.tokenizer(
+            text,
+            add_special_tokens=False,
+            return_offsets_mapping=True,
+        )
+    except Exception:
+        return None
+    offsets = enc.get("offset_mapping")
+    if offsets is None:
+        return None
+    char_loc = text.find(substring)
+    if char_loc < 0:
+        return None
+    start_char = char_loc
+    end_char = char_loc + len(substring)
+    tok_start, tok_end = None, None
+    for i, (s, e) in enumerate(offsets):
+        if e <= s:
+            continue
+        if tok_start is None and s <= start_char < e:
+            tok_start = i
+        if tok_start is not None and s < end_char <= e:
+            tok_end = i + 1
+            break
+        if tok_start is not None and s >= start_char and e >= end_char:
+            tok_end = i + 1
+            break
+    if tok_start is None:
+        for i, (s, e) in enumerate(offsets):
+            if e <= s:
+                continue
+            if s < end_char and e > start_char:
+                tok_start = i
+                break
+    if tok_start is not None and tok_end is None:
+        for i in range(tok_start, len(offsets)):
+            s, e = offsets[i]
+            if e >= end_char:
+                tok_end = i + 1
+                break
+    if tok_start is None or tok_end is None:
+        return None
+    return (tok_start, tok_end)
+
+
+def find_token_range(mt: ModelAndTokenizer, text_or_tokens, substring: str) -> Optional[Tuple[int, int]]:
+    if mt.is_llama_family:
+        text = str(text_or_tokens)
+        encoded = mt.tokenizer(text, add_special_tokens=False, return_tensors="pt")
+        input_ids = encoded.input_ids[0]
+        prepend_space = get_prepend_space(mt)
+
+        match = find_token_span_by_search(mt, input_ids, substring, prepend_space=False)
+        if match is None and prepend_space:
+            match = find_token_span_by_search(mt, input_ids, substring, prepend_space=True)
+        if match is None:
+            match = find_token_span_by_offsets(mt, text, substring)
+        return match
+
+    toks = decode_tokens(mt, text_or_tokens)
+    whole_string = "".join(toks)
+    char_loc = whole_string.find(substring)
+    if char_loc < 0:
+        return None
+    loc = 0
+    tok_start, tok_end = None, None
+    for i, t in enumerate(toks):
+        loc += len(t)
+        if tok_start is None and loc > char_loc:
+            tok_start = i
+        if tok_end is None and loc >= char_loc + len(substring):
+            tok_end = i + 1
+            break
+    if tok_start is None or tok_end is None:
+        return None
+    return (tok_start, tok_end)
+
+
 def generate_answer(mt: ModelAndTokenizer, prompt: str, max_new_tokens: int) -> str:
     inputs = tokenize_prompt(mt, prompt)
     with torch.no_grad():
@@ -222,10 +349,44 @@ def get_prompt_token_count(mt: ModelAndTokenizer, prompt: str) -> int:
     return int(inputs["input_ids"].shape[1])
 
 
-def collect_donor_states(mt: ModelAndTokenizer, prompt: str, last_k: int) -> Dict[str, object]:
+def resolve_donor_subject(case: dict) -> Optional[str]:
+    orig = case.get("orig") or {}
+    triples_labeled = orig.get("triples_labeled") or []
+    if triples_labeled:
+        last_triple = triples_labeled[-1]
+        if isinstance(last_triple, (list, tuple)) and len(last_triple) > 0:
+            donor_subject = last_triple[0]
+            if donor_subject:
+                return str(donor_subject)
+
+    single_hops = case.get("single_hops") or []
+    if len(single_hops) >= 2:
+        donor_subject = single_hops[-2].get("answer")
+        if donor_subject:
+            return str(donor_subject)
+
+    return None
+
+
+def collect_donor_states(
+    mt: ModelAndTokenizer,
+    prompt: str,
+    patch_position: str,
+    last_k: int,
+    subject: Optional[str] = None,
+) -> Dict[str, object]:
     inputs = tokenize_prompt(mt, prompt)
     token_count = int(inputs["input_ids"].shape[1])
     effective_k = min(last_k, token_count)
+    subject_last_index = None
+    if patch_position == "subject_last":
+        if subject is None:
+            raise ValueError("subject must be provided for subject_last mode")
+        subject_range = find_token_range(mt, prompt if mt.is_llama_family else inputs["input_ids"][0], subject)
+        if subject_range is None:
+            raise ValueError(f"Could not locate subject in donor prompt: {subject!r}")
+        subject_last_index = subject_range[1] - 1
+
     trace_layers = []
     for module_name in MODULE_NAMES:
         kind = module_kind(module_name)
@@ -239,11 +400,15 @@ def collect_donor_states(mt: ModelAndTokenizer, prompt: str, last_k: int) -> Dic
         for layer in range(mt.num_layers):
             lname = layername(mt.model, layer, kind)
             output = untuple(td[lname].output)[0]
-            cache[module_name][layer] = output[-effective_k:].detach().cpu()
+            if patch_position == "subject_last":
+                cache[module_name][layer] = output[subject_last_index : subject_last_index + 1].detach().cpu()
+            else:
+                cache[module_name][layer] = output[-effective_k:].detach().cpu()
     return {
         "states": cache,
         "effective_k": effective_k,
         "prompt_token_count": token_count,
+        "subject_last_index": subject_last_index,
     }
 
 
@@ -297,16 +462,29 @@ def generate_from_patched_state(
 def patched_prefill_forward(
     mt: ModelAndTokenizer,
     prompt: str,
+    subject: str,
     donor_cache: dict,
-    token_offset: int,
+    patch_position: str,
+    token_offset: Optional[int],
     layer: int,
     module_name: str,
 ):
     kind = module_kind(module_name)
-    donor_tensor = donor_cache["states"][module_name][layer][-(token_offset)]
     inputs = tokenize_prompt(mt, prompt)
     prompt_token_count = int(inputs["input_ids"].shape[1])
-    patch_index = prompt_token_count - token_offset
+
+    if patch_position == "subject_last":
+        subject_range = find_token_range(mt, prompt if mt.is_llama_family else inputs["input_ids"][0], subject)
+        if subject_range is None:
+            raise ValueError(f"Could not locate subject in target prompt: {subject!r}")
+        target_subject_last_index = subject_range[1] - 1
+        donor_tensor = donor_cache["states"][module_name][layer][0]
+        patch_index = target_subject_last_index
+    else:
+        if token_offset is None:
+            raise ValueError("token_offset must be provided when patch_position=last_k")
+        donor_tensor = donor_cache["states"][module_name][layer][-(token_offset)]
+        patch_index = prompt_token_count - token_offset
     target_layer = layername(mt.model, layer, kind)
 
     def edit_output(output, layer):
@@ -332,8 +510,10 @@ def patched_prefill_forward(
 def patch_generation(
     mt: ModelAndTokenizer,
     prompt: str,
+    subject: str,
     donor_cache: dict,
-    token_offset: int,
+    patch_position: str,
+    token_offset: Optional[int],
     layer: int,
     module_name: str,
     max_new_tokens: int,
@@ -341,7 +521,9 @@ def patch_generation(
     inputs, outputs = patched_prefill_forward(
         mt,
         prompt,
+        subject,
         donor_cache,
+        patch_position=patch_position,
         token_offset=token_offset,
         layer=layer,
         module_name=module_name,
@@ -359,6 +541,7 @@ def patch_generation(
 def evaluate_case(
     mt: ModelAndTokenizer,
     case: dict,
+    patch_position: str,
     last_k: int,
     max_new_tokens: int,
     layers_to_run: List[int],
@@ -386,6 +569,7 @@ def evaluate_case(
         "donor_is_correct": donor_correct,
         "baseline_generation": baseline_generation,
         "baseline_is_correct": baseline_correct,
+        "patch_position_mode": patch_position,
         "last_k_requested": last_k,
         "layers_to_run": layers_to_run,
     }
@@ -402,26 +586,64 @@ def evaluate_case(
         )
         return meta, []
 
-    donor_cache = collect_donor_states(mt, donor_prompt, last_k=last_k)
+    donor_subject = None
+    if patch_position == "subject_last":
+        donor_subject = resolve_donor_subject(case)
+        if not donor_subject:
+            print(
+                f"[Skip] invalid subject_last case: missing donor subject | "
+                f"case_id={case.get('case_id')} known_id={case.get('known_id')}"
+            )
+            return meta, []
+
+    try:
+        donor_cache = collect_donor_states(
+            mt,
+            donor_prompt,
+            patch_position=patch_position,
+            last_k=last_k,
+            subject=donor_subject,
+        )
+    except ValueError as e:
+        print(
+            f"[Skip] subject not found in donor prompt | case_id={case.get('case_id')} "
+            f"known_id={case.get('known_id')} | {e}"
+        )
+        return meta, []
     effective_k = min(donor_cache["effective_k"], get_prompt_token_count(mt, target_prompt))
     rows = []
-    for token_offset in range(1, effective_k + 1):
+    if patch_position == "subject_last":
+        patch_specs = [(None, "subject_last", case["subject"])]
+    else:
+        patch_specs = [(token_offset, f"last_{token_offset}", case["subject"]) for token_offset in range(1, effective_k + 1)]
+
+    for token_offset, patch_label, subject in patch_specs:
         for module_name in MODULE_NAMES:
             for layer in layers_to_run:
-                patched_generation = patch_generation(
-                    mt,
-                    target_prompt,
-                    donor_cache,
-                    token_offset=token_offset,
-                    layer=layer,
-                    module_name=module_name,
-                    max_new_tokens=max_new_tokens,
-                )
+                try:
+                    patched_generation = patch_generation(
+                        mt,
+                        target_prompt,
+                        subject,
+                        donor_cache,
+                        patch_position=patch_position,
+                        token_offset=token_offset,
+                        layer=layer,
+                        module_name=module_name,
+                        max_new_tokens=max_new_tokens,
+                    )
+                except ValueError as e:
+                    print(
+                        f"[Skip row] subject not found in target prompt | case_id={case.get('case_id')} "
+                        f"known_id={case.get('known_id')} | {e}"
+                    )
+                    continue
                 patched_correct = check_contains(patched_generation, target_golds)
                 rows.append(
                     {
                         **meta,
-                        "token_offset": -token_offset,
+                        "token_offset": 0 if token_offset is None else -token_offset,
+                        "patch_label": patch_label,
                         "module": module_name,
                         "layer": layer,
                         "patched_generation": patched_generation,
@@ -492,6 +714,7 @@ def main() -> None:
         meta, rows = evaluate_case(
             mt,
             case,
+            patch_position=args.patch_position,
             last_k=args.last_k,
             max_new_tokens=args.max_new_tokens,
             layers_to_run=layers_to_run,
