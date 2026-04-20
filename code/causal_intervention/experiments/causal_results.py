@@ -208,14 +208,14 @@ def plot_focus_token_heatmap(
     ax.set_xticklabels(xtick_labels, fontsize=9)
     ax.tick_params(axis="x", pad=6)
     if kind is None:
-        ax.set_title("Impact of aggregated key-token states", fontsize=12, pad=12)
+        ax.set_title("Impact of aggregated key-token states", fontsize=12, pad=18)
         ax.set_xlabel("single restored layer within GPT", fontsize=10, labelpad=10)
     else:
         kind_name = "MLP" if kind == "mlp" else "Attn"
         ax.set_title(
             f"Impact of aggregated key-token {kind_name} states",
             fontsize=12,
-            pad=12,
+            pad=18,
         )
         ax.set_xlabel(
             f"center of interval of patched {kind_name} layers",
@@ -242,7 +242,7 @@ def plot_focus_token_heatmap(
         va="bottom",
         fontsize=8.5,
     )
-    fig.subplots_adjust(left=0.24, right=0.88, bottom=0.28, top=0.80)
+    fig.subplots_adjust(left=0.24, right=0.88, bottom=0.28, top=0.76)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
