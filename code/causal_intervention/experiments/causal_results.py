@@ -226,7 +226,7 @@ def plot_focus_token_heatmap(
     colorbar_exponent = int(np.floor(np.log10(max_abs_value))) if max_abs_value > 0 else 0
     colorbar_scale = 10 ** colorbar_exponent
 
-    cbar = plt.colorbar(image, ax=ax, fraction=0.06, pad=0.08)
+    cbar = plt.colorbar(image, ax=ax, fraction=0.06, pad=0.05)
     cbar.formatter = FuncFormatter(
         lambda value, _pos: f"{(value / colorbar_scale):.1f}" if colorbar_scale != 0 else f"{value:.1f}"
     )
@@ -242,7 +242,7 @@ def plot_focus_token_heatmap(
         va="bottom",
         fontsize=8.5,
     )
-    fig.subplots_adjust(left=0.24, right=0.88, bottom=0.28, top=0.76)
+    fig.subplots_adjust(left=0.24, right=0.86, bottom=0.28, top=0.76)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
