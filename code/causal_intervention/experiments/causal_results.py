@@ -233,8 +233,16 @@ def plot_focus_token_heatmap(
     cbar.update_ticks()
     cbar.ax.tick_params(labelsize=8)
     cbar.set_label("mean Δp", fontsize=10, rotation=270, labelpad=16)
-    cbar.ax.set_title(rf"$\times 10^{{{colorbar_exponent}}}$", fontsize=8.5, pad=8)
-    fig.subplots_adjust(left=0.24, right=0.86, bottom=0.28, top=0.84)
+    cbar.ax.text(
+        0.5,
+        1.02,
+        rf"$\times 10^{{{colorbar_exponent}}}$",
+        transform=cbar.ax.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=8.5,
+    )
+    fig.subplots_adjust(left=0.24, right=0.86, bottom=0.28, top=0.80)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
