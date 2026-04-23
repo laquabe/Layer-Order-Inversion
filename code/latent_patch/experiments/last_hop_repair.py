@@ -45,6 +45,12 @@ def parse_args() -> argparse.Namespace:
         help="Whether to patch the last-k prompt-end tokens or the last subject token.",
     )
     parser.add_argument("--last_k", type=int, default=3)
+    parser.add_argument(
+        "--min_token_offset",
+        type=int,
+        default=1,
+        help="For patch_position=last_k, only run token offsets in [min_token_offset, last_k].",
+    )
     parser.add_argument("--max_new_tokens", type=int, default=64)
     parser.add_argument("--max_cases", type=int, default=None)
     parser.add_argument("--start_index", type=int, default=0)
@@ -543,6 +549,7 @@ def evaluate_case(
     case: dict,
     patch_position: str,
     last_k: int,
+    min_token_offset: int,
     max_new_tokens: int,
     layers_to_run: List[int],
 ) -> Tuple[dict, List[dict]]:
@@ -615,7 +622,15 @@ def evaluate_case(
     if patch_position == "subject_last":
         patch_specs = [(None, "subject_last", case["subject"])]
     else:
-        patch_specs = [(token_offset, f"last_{token_offset}", case["subject"]) for token_offset in range(1, effective_k + 1)]
+        start_offset = max(1, min_token_offset)
+        if start_offset > effective_k:
+            meta["effective_k"] = effective_k
+            meta["min_token_offset"] = start_offset
+            return meta, []
+        patch_specs = [
+            (token_offset, f"last_{token_offset}", case["subject"])
+            for token_offset in range(start_offset, effective_k + 1)
+        ]
 
     for token_offset, patch_label, subject in patch_specs:
         for module_name in MODULE_NAMES:
@@ -652,6 +667,7 @@ def evaluate_case(
                     }
                 )
     meta["effective_k"] = effective_k
+    meta["min_token_offset"] = max(1, min_token_offset)
     return meta, rows
 
 
@@ -716,6 +732,7 @@ def main() -> None:
             case,
             patch_position=args.patch_position,
             last_k=args.last_k,
+            min_token_offset=args.min_token_offset,
             max_new_tokens=args.max_new_tokens,
             layers_to_run=layers_to_run,
         )
