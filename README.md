@@ -86,6 +86,31 @@ python code/hidden_state_similarity/merge_results.py
 ```
 to get the comparsion figures.
 
+### Causal Intervention
+
+We adopt the causal tracing pipeline of [ROME](https://github.com/kmeng01/rome). All commands in this section should be executed from `code/causal_intervention`, which is a self-contained module with its own `experiments/` and `scripts/` folders.
+
+#### Run Causal Trace
+
+For GPT-J / GPT-2, run:
+```
+bash scripts/causal_trace.sh
+```
+
+For Llama-3, run:
+```
+python -m experiments.causal_trace_llama --model_name <path_or_hf_name> --noise_level s3
+```
+Add `--local` if `--model_name` points to a local checkpoint. Per-case results (`knowledge_*.npz`) and PDFs are saved to `results/<model_tag>/causal_trace/`.
+
+#### Aggregate and Draw
+
+To aggregate per-token effects into heatmaps and compare interference ratios across hop subsets, run:
+```
+python -m experiments.causal_results <result_dir> --last_k 3
+```
+where `<result_dir>` is either a single run directory (containing `cases/`) or an outer directory holding multiple subset runs (e.g., 2hop / 3hop / 4hop). Plots are written to `<result_dir>/analysis`.
+
 
 ## License
 This project is licensed under the MIT License.
