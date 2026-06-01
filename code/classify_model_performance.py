@@ -11,12 +11,18 @@ classify_model_performance_split.py
 import json
 from pathlib import Path
 from typing import List
-from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 from collections import Counter
 from copy import deepcopy
 import random
 import numpy as np
+
+from model_support import (
+    default_torch_dtype,
+    greedy_generation_kwargs,
+    load_causal_lm,
+    load_tokenizer,
+)
 
 def set_seeds(seed):
     torch.manual_seed(seed)
@@ -32,8 +38,7 @@ def generate_answer(model, tokenizer, question: str, device: str, max_new_tokens
         outputs = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            temperature=0.0,
-            do_sample=False
+            **greedy_generation_kwargs(tokenizer),
         )
     ans = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
     return ans
@@ -109,11 +114,12 @@ def main():
     set_seeds(args.seed)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
-    model = AutoModelForCausalLM.from_pretrained(
+    tokenizer = load_tokenizer(args.model)
+    model = load_causal_lm(
         args.model,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-    ).to(device)
+        torch_dtype=default_torch_dtype(args.model, device),
+        device=device,
+    )
     if model.config.pad_token_id is None:
         model.config.pad_token_id = tokenizer.pad_token_id
     model.eval()

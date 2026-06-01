@@ -295,7 +295,5 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("datasets_dir")
     parser.add_argument("output_path")
-    parser.add_argument("-m", "--models", nargs="+", required=True, choices=[
-        "meta-llama/Llama-2-7b-hf", "meta-llama/Llama-2-13b-hf",
-        "meta-llama/Meta-Llama-3-8B", "meta-llama/Meta-Llama-3-70B"])
+    parser.add_argument("-m", "--models", nargs="+", required=True)
     main(parser.parse_args())

@@ -1,93 +1,69 @@
 import ast
+import sys
+from pathlib import Path
 
 import pandas as pd
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, GPT2LMHeadModel, \
-    LlamaForCausalLM, GemmaForCausalLM, GPTJForCausalLM
+
+
+PROJECT_CODE_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_CODE_DIR))
+
+from model_support import (
+    attention_layer_names,
+    attention_modules,
+    get_model_family,
+    greedy_generation_kwargs,
+    layer_names,
+    load_causal_lm,
+    load_tokenizer as support_load_tokenizer,
+    mlp_layer_names,
+    norm_module,
+    should_prepend_space_for_token_search,
+)
 
 
 HF_TOKEN = ""
 
 
 def load_tokenizer(model_name):
-    tokenizer = AutoTokenizer.from_pretrained(model_name, token=HF_TOKEN)
-    tokenizer.pad_token = tokenizer.eos_token
-    return tokenizer
+    return support_load_tokenizer(model_name, token=HF_TOKEN or None)
 
 
 def load_model(model_name, device="cuda"):
     if "70b" in model_name or "70B" in model_name:
-        return AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype="auto",
-                                                    token=HF_TOKEN)
-    else:
-        return AutoModelForCausalLM.from_pretrained(model_name, token=HF_TOKEN).to(device)
+        return load_causal_lm(
+            model_name,
+            device_map="auto",
+            torch_dtype="auto",
+            token=HF_TOKEN or None,
+        )
+    return load_causal_lm(model_name, device=device, token=HF_TOKEN or None)
 
 
 def get_layer_names(model):
-    if isinstance(model, (GPT2LMHeadModel, GPTJForCausalLM)):
-        return [f"transformer.h.{i}" for i in range(model.config.num_hidden_layers)]
-    elif type(model) is LlamaForCausalLM:
-        return [f"model.layers.{i}" for i in range(model.config.num_hidden_layers)]
-    elif type(model) is GemmaForCausalLM:
-        return [f"model.layers.{i}" for i in range(model.config.num_hidden_layers)]
-    else:
-        raise ValueError(f"Model type {type(model)} not supported")
+    return layer_names(model)
 
 
 def get_attention_layers_names(model):
-    if isinstance(model, (GPT2LMHeadModel, GPTJForCausalLM)):
-        return [f"transformer.h.{i}.attn" for i in range(model.config.num_hidden_layers)]
-    elif type(model) is LlamaForCausalLM:
-        return [f"model.layers.{i}.self_attn" for i in range(model.config.num_hidden_layers)]
-    else:
-        raise ValueError(f"Model type {type(model)} not supported")
+    return attention_layer_names(model)
 
 
 def get_mlp_layers_names(model):
-    if isinstance(model, (GPT2LMHeadModel, GPTJForCausalLM)):
-        return [f"transformer.h.{i}.mlp" for i in range(model.config.num_hidden_layers)]
-    elif type(model) is LlamaForCausalLM:
-        return [f"model.layers.{i}.mlp" for i in range(model.config.num_hidden_layers)]
-    else:
-        raise ValueError(f"Model type {type(model)} not supported")
+    return mlp_layer_names(model)
 
 
 def get_attention_modules(model, layer, k=0):
-    bot = max(0, layer - k)
-    top = min(layer + k + 1, model.config.num_hidden_layers)
-    if isinstance(model, (GPT2LMHeadModel, GPTJForCausalLM)):
-        return [model.transformer.h[l].attn for l in range(bot, top)]
-    elif type(model) is LlamaForCausalLM:
-        return [model.model.layers[l].self_attn for l in range(bot, top)]
-    elif type(model) is GemmaForCausalLM:
-        return [model.model.layers[l].self_attn for l in range(bot, top)]
-    else:
-        raise ValueError(f"Model type {type(model)} not supported")
+    return attention_modules(model, layer, k)
 
 
 def get_norm_module(model):
-    if isinstance(model, (GPT2LMHeadModel, GPTJForCausalLM)):
-        return model.transformer.ln_f
-    elif type(model) is LlamaForCausalLM:
-        return model.model.norm
-    elif type(model) is GemmaForCausalLM:
-        return model.model.norm
-    else:
-        raise ValueError(f"Model type {type(model)} not supported")
+    return norm_module(model)
 
 
 def get_prepend_space(model):
-    if isinstance(model, (GPT2LMHeadModel, GPTJForCausalLM)):
-        return True
-    elif type(model) is LlamaForCausalLM:
-        if "Llama-3" in model.config._name_or_path:
-            return True
-        elif "Llama-2" in model.config._name_or_path:
-            return False
-    elif type(model) is GemmaForCausalLM:
-        return True
-    else:
-        raise ValueError(f"Model type {type(model)} not supported")
+    return should_prepend_space_for_token_search(model)
 
 
 def decode_generated(tokenizer, generated, prompts):
@@ -113,8 +89,11 @@ def check_answer_in_pred(pred, answers):
 def generate_and_test_answers(model, tokenizer, prompts, answers):
     inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(model.device)
     with torch.no_grad():
-        generated = model.generate(**inputs, do_sample=False, temperature=1, top_p=1, num_beams=1,
-                                   pad_token_id=tokenizer.eos_token_id, max_new_tokens=10)
+        generated = model.generate(
+            **inputs,
+            max_new_tokens=10,
+            **greedy_generation_kwargs(tokenizer),
+        )
     predictions = decode_generated(tokenizer, generated, prompts)
     for prompt, pred, a in zip(prompts, predictions, answers):
         print(f"Prompt: {prompt}\nPrediction: {pred}\nAnswers: {a}\nResults: {check_answer_in_pred(pred, a)}")

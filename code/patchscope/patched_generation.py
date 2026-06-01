@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from baukit import Trace, TraceDict
 
 from utils import get_prepend_space, get_layer_names, get_attention_modules, get_attention_layers_names, \
-    get_norm_module, get_mlp_layers_names
+    get_norm_module, get_mlp_layers_names, greedy_generation_kwargs
 
 # def find_tokens_by_char(tokenizer, text, substring):
 #     """在字符级别定位 substring，再映射到 token 索引范围"""
@@ -140,8 +140,11 @@ def generate_with_patching_layer(model, tokenizer, hidden_state, target_layer, t
         if do_sample:
             generated = model.generate(**inputs, pad_token_id=tokenizer.eos_token_id, max_new_tokens=10, do_sample=True)
         else:
-            generated = model.generate(**inputs, do_sample=False, temperature=1, top_p=1, num_beams=1,
-                                       pad_token_id=tokenizer.eos_token_id, max_new_tokens=10)
+            generated = model.generate(
+                **inputs,
+                max_new_tokens=10,
+                **greedy_generation_kwargs(tokenizer),
+            )
 
     return decode_generated(tokenizer, generated, target_prompt)
 
@@ -246,12 +249,21 @@ def generate_with_attention_knockout(model, tokenizer, layer_idx, prompt, source
 
     with torch.no_grad():
         if default_decoding:
-            generated = model.generate(**inputs, pad_token_id=tokenizer.eos_token_id, max_new_tokens=10,
-                                       return_dict_in_generate=return_probabilities, output_scores=return_probabilities)
+            generated = model.generate(
+                **inputs,
+                pad_token_id=tokenizer.eos_token_id,
+                max_new_tokens=10,
+                return_dict_in_generate=return_probabilities,
+                output_scores=return_probabilities,
+            )
         else:
-            generated = model.generate(**inputs, do_sample=False, temperature=1, top_p=1, num_beams=1,
-                                       pad_token_id=tokenizer.eos_token_id, max_new_tokens=10,
-                                       return_dict_in_generate=return_probabilities, output_scores=return_probabilities)
+            generated = model.generate(
+                **inputs,
+                max_new_tokens=10,
+                return_dict_in_generate=return_probabilities,
+                output_scores=return_probabilities,
+                **greedy_generation_kwargs(tokenizer),
+            )
 
     if layer_idx != -1:
         for i, attention_module in enumerate(attention_modules):
@@ -330,4 +342,3 @@ def get_attention_projection(model, tokenizer, prompt, bridge_entities, answers)
 
 def get_mlp_projection(model, tokenizer, prompt, bridge_entities, answers):
     return get_sublayer_projection(model, tokenizer, prompt, bridge_entities, answers, get_mlp_layers_names(model))
-

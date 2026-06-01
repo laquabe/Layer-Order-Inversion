@@ -7,7 +7,6 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -16,18 +15,24 @@ if str(PROJECT_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_CODE_DIR))
 
 from latent_patch.util import nethook
-
-
-DEFAULT_GPTJ_REMOTE = "EleutherAI/gpt-j-6B"
-DEFAULT_GPTJ_LOCAL = "/data/xkliu/hf_models/gpt-j-6b"
-DEFAULT_LLAMA3_REMOTE = "meta-llama/Meta-Llama-3-8B-Instruct"
-DEFAULT_LLAMA3_LOCAL = "/data/xkliu/hf_models/Meta-Llama-3-8B-Instruct"
+from model_support import (
+    DEFAULT_GPTJ_REMOTE,
+    decode_tokens as support_decode_tokens,
+    default_torch_dtype,
+    encode_text as support_encode_text,
+    encode_without_special_tokens as support_encode_without_special_tokens,
+    find_token_range as support_find_token_range,
+    get_model_family,
+    get_pad_token_id as support_get_pad_token_id,
+    greedy_generation_kwargs,
+    layer_name as support_layer_name,
+    load_causal_lm,
+    load_tokenizer as support_load_tokenizer,
+    model_layers_from_named_modules,
+    path_safe_model_name,
+    uses_model_layers,
+)
 MODULE_NAMES = ["base", "mlp", "attn"]
-
-
-def is_llama_family_name(model_name: str) -> bool:
-    lowered = model_name.lower()
-    return "llama" in lowered or "meta-llama" in lowered
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,25 +78,13 @@ class ModelAndTokenizer:
         low_cpu_mem_usage: bool = False,
     ):
         self.model_name = model_name
-        self.is_llama_family = is_llama_family_name(model_name)
-        local_model_paths = {
-            DEFAULT_GPTJ_REMOTE: DEFAULT_GPTJ_LOCAL,
-            "gpt-j-6B": DEFAULT_GPTJ_LOCAL,
-            DEFAULT_LLAMA3_REMOTE: DEFAULT_LLAMA3_LOCAL,
-            "Meta-Llama-3-8B-Instruct": DEFAULT_LLAMA3_LOCAL,
-        }
-        model_path = local_model_paths.get(model_name, model_name) if local else model_name
+        self.family = get_model_family(model_name)
+        self.uses_model_layers = uses_model_layers(model_name)
+        tokenizer = support_load_tokenizer(model_name, local=local)
 
-        if self.is_llama_family:
-            tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-            tokenizer.padding_side = "left"
-        else:
-            tokenizer = AutoTokenizer.from_pretrained(model_path)
-
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
+        model = load_causal_lm(
+            model_name,
+            local=local,
             torch_dtype=torch_dtype,
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
@@ -100,33 +93,12 @@ class ModelAndTokenizer:
         self.model = model
         self.tokenizer = tokenizer
         self.device = next(model.parameters()).device
-        self.layer_names = [
-            n
-            for n, _ in model.named_modules()
-            if re.match(r"^(transformer|gpt_neox)\.(h|layers)\.\d+$", n)
-            or re.match(r"^model\.layers\.\d+$", n)
-        ]
+        self.layer_names = model_layers_from_named_modules(model)
         self.num_layers = len(self.layer_names)
 
 
 def layername(model, num: int, kind: Optional[str] = None) -> str:
-    if hasattr(model, "transformer"):
-        if kind == "embed":
-            return "transformer.wte"
-        return f'transformer.h.{num}{"" if kind is None else "." + kind}'
-    if hasattr(model, "gpt_neox"):
-        if kind == "embed":
-            return "gpt_neox.embed_in"
-        if kind == "attn":
-            kind = "attention"
-        return f'gpt_neox.layers.{num}{"" if kind is None else "." + kind}'
-    if hasattr(model, "model") and hasattr(model.model, "layers"):
-        if kind == "embed":
-            return "model.embed_tokens"
-        if kind == "attn":
-            kind = "self_attn"
-        return f'model.layers.{num}{"" if kind is None else "." + kind}'
-    raise AssertionError("unknown transformer structure")
+    return support_layer_name(model, num, kind)
 
 
 def format_qa_prompt(question: str) -> str:
@@ -184,7 +156,7 @@ def untuple(x):
 
 
 def get_pad_token_id(tokenizer):
-    return tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+    return support_get_pad_token_id(tokenizer)
 
 
 def module_kind(module_name: str) -> Optional[str]:
@@ -192,19 +164,15 @@ def module_kind(module_name: str) -> Optional[str]:
 
 
 def encode_text(mt: ModelAndTokenizer, text: str) -> List[int]:
-    if mt.is_llama_family:
-        return mt.tokenizer.encode(text)
-    return mt.tokenizer.encode(text)
+    return support_encode_text(mt.tokenizer, text)
 
 
 def encode_without_special_tokens(mt: ModelAndTokenizer, text: str) -> List[int]:
-    if mt.is_llama_family:
-        return mt.tokenizer.encode(text, add_special_tokens=False)
-    return mt.tokenizer.encode(text, add_special_tokens=False)
+    return support_encode_without_special_tokens(mt.tokenizer, text)
 
 
 def tokenize_prompt(mt: ModelAndTokenizer, prompt: str) -> Dict[str, torch.Tensor]:
-    if mt.is_llama_family:
+    if mt.uses_model_layers:
         return mt.tokenizer(prompt, return_tensors="pt").to(mt.device)
 
     token_ids = encode_text(mt, prompt)
@@ -216,14 +184,11 @@ def tokenize_prompt(mt: ModelAndTokenizer, prompt: str) -> Dict[str, torch.Tenso
 
 
 def decode_tokens(mt: ModelAndTokenizer, token_array) -> List[str]:
-    if hasattr(token_array, "shape") and len(token_array.shape) > 1:
-        return [decode_tokens(mt, row) for row in token_array]
-    return [mt.tokenizer.decode([int(t)], skip_special_tokens=False) for t in token_array]
+    return support_decode_tokens(mt.tokenizer, token_array)
 
 
 def get_prepend_space(mt: ModelAndTokenizer) -> bool:
-    name = getattr(mt.tokenizer, "name_or_path", "")
-    return "llama-3" in name.lower() or "meta-llama-3" in name.lower()
+    return False
 
 
 def find_token_span_by_search(
@@ -304,36 +269,7 @@ def find_token_span_by_offsets(
 
 
 def find_token_range(mt: ModelAndTokenizer, text_or_tokens, substring: str) -> Optional[Tuple[int, int]]:
-    if mt.is_llama_family:
-        text = str(text_or_tokens)
-        encoded = mt.tokenizer(text, add_special_tokens=False, return_tensors="pt")
-        input_ids = encoded.input_ids[0]
-        prepend_space = get_prepend_space(mt)
-
-        match = find_token_span_by_search(mt, input_ids, substring, prepend_space=False)
-        if match is None and prepend_space:
-            match = find_token_span_by_search(mt, input_ids, substring, prepend_space=True)
-        if match is None:
-            match = find_token_span_by_offsets(mt, text, substring)
-        return match
-
-    toks = decode_tokens(mt, text_or_tokens)
-    whole_string = "".join(toks)
-    char_loc = whole_string.find(substring)
-    if char_loc < 0:
-        return None
-    loc = 0
-    tok_start, tok_end = None, None
-    for i, t in enumerate(toks):
-        loc += len(t)
-        if tok_start is None and loc > char_loc:
-            tok_start = i
-        if tok_end is None and loc >= char_loc + len(substring):
-            tok_end = i + 1
-            break
-    if tok_start is None or tok_end is None:
-        return None
-    return (tok_start, tok_end)
+    return support_find_token_range(mt.tokenizer, text_or_tokens, substring, model_or_name=mt.model)
 
 
 def generate_answer(mt: ModelAndTokenizer, prompt: str, max_new_tokens: int) -> str:
@@ -342,9 +278,7 @@ def generate_answer(mt: ModelAndTokenizer, prompt: str, max_new_tokens: int) -> 
         outputs = mt.model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            temperature=0.0,
-            do_sample=False,
-            pad_token_id=get_pad_token_id(mt.tokenizer),
+            **greedy_generation_kwargs(mt.tokenizer),
         )
     generated_ids = outputs[0][inputs["input_ids"].shape[1] :]
     return mt.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
@@ -388,7 +322,7 @@ def collect_donor_states(
     if patch_position == "subject_last":
         if subject is None:
             raise ValueError("subject must be provided for subject_last mode")
-        subject_range = find_token_range(mt, prompt if mt.is_llama_family else inputs["input_ids"][0], subject)
+        subject_range = find_token_range(mt, prompt if mt.uses_model_layers else inputs["input_ids"][0], subject)
         if subject_range is None:
             raise ValueError(f"Could not locate subject in donor prompt: {subject!r}")
         subject_last_index = subject_range[1] - 1
@@ -480,7 +414,7 @@ def patched_prefill_forward(
     prompt_token_count = int(inputs["input_ids"].shape[1])
 
     if patch_position == "subject_last":
-        subject_range = find_token_range(mt, prompt if mt.is_llama_family else inputs["input_ids"][0], subject)
+        subject_range = find_token_range(mt, prompt if mt.uses_model_layers else inputs["input_ids"][0], subject)
         if subject_range is None:
             raise ValueError(f"Could not locate subject in target prompt: {subject!r}")
         target_subject_last_index = subject_range[1] - 1
@@ -694,7 +628,7 @@ def save_case_result(cases_dir: Path, meta: dict, rows: List[dict]) -> None:
 
 def main() -> None:
     args = parse_args()
-    modeldir = args.model_name.replace("/", "_")
+    modeldir = path_safe_model_name(args.model_name)
     output_dir = Path(args.output_dir.format(model_name=modeldir))
     cases_dir = output_dir / "cases"
     results_file = output_dir / "results.jsonl"
@@ -702,11 +636,11 @@ def main() -> None:
         raise FileExistsError(f"{results_file} already exists. Use --overwrite to replace it.")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    use_fp16 = ("llama" in args.model_name.lower()) or ("gpt-j" in args.model_name.lower())
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     mt = ModelAndTokenizer(
         args.model_name,
         local=args.local,
-        torch_dtype=torch.float16 if use_fp16 else None,
+        torch_dtype=default_torch_dtype(args.model_name, device),
     )
     layers_to_run = parse_layer_list(args.layers, mt.num_layers)
     cases = load_cases(args.input_file)

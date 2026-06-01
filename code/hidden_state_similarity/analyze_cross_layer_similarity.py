@@ -14,6 +14,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
@@ -21,7 +22,18 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
-from transformers import AutoTokenizer, AutoModelForCausalLM
+
+
+PROJECT_CODE_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_CODE_DIR))
+
+from model_support import (
+    default_torch_dtype,
+    load_causal_lm,
+    load_tokenizer as support_load_tokenizer,
+    register_sublayer_hooks,
+)
 
 
 # ===================== Hook 注册（GPT-J） =====================
@@ -55,7 +67,7 @@ def register_hooks_gptj(model, target_module: str):
 
 # ===================== 编码 + 抽取层表示 =====================
 def encode_and_run(model, tokenizer, text: str, target_module: str, device: str, max_len: int):
-    buffers, handles = register_hooks_gptj(model, target_module)
+    buffers, handles = register_sublayer_hooks(model, target_module)
     enc = tokenizer(
         text,
         return_tensors="pt",
@@ -106,10 +118,10 @@ def locate_subject_tokens(tokens, offsets, text, subject_name: Optional[str]) ->
     if full_span:
         spans.append(full_span)
     else:
-        for w in subject_name.strip().split():
-            sp = find_span(w)
-            if sp:
-                spans.append(sp)
+        for word in subject_name.strip().split():
+            span = find_span(word)
+            if span:
+                spans.append(span)
 
     if not spans:
         return []
@@ -209,13 +221,11 @@ def main():
 
     # ================= 模型准备 =================
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer = support_load_tokenizer(args.model)
 
-    model = AutoModelForCausalLM.from_pretrained(
+    model = load_causal_lm(
         args.model,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        torch_dtype=default_torch_dtype(args.model, device),
         device_map="auto" if device == "cuda" else None
     )
     model.eval()

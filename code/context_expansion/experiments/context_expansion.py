@@ -7,7 +7,6 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -17,17 +16,18 @@ if str(PROJECT_CODE_DIR) not in sys.path:
 
 
 from latent_patch.util import nethook
-
-
-DEFAULT_GPTJ_REMOTE = "EleutherAI/gpt-j-6B"
-DEFAULT_GPTJ_LOCAL = "/data/xkliu/hf_models/gpt-j-6b"
-DEFAULT_LLAMA3_REMOTE = "meta-llama/Meta-Llama-3-8B-Instruct"
-DEFAULT_LLAMA3_LOCAL = "/data/xkliu/hf_models/Meta-Llama-3-8B-Instruct"
-
-
-def is_llama_family_name(model_name: str) -> bool:
-    lowered = model_name.lower()
-    return "llama" in lowered or "meta-llama" in lowered
+from model_support import (
+    DEFAULT_GPTJ_REMOTE,
+    default_torch_dtype,
+    encode_text as support_encode_text,
+    get_model_family,
+    get_pad_token_id as support_get_pad_token_id,
+    greedy_generation_kwargs,
+    load_causal_lm,
+    load_tokenizer as support_load_tokenizer,
+    path_safe_model_name,
+    uses_model_layers,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,25 +76,13 @@ class ModelAndTokenizer:
         low_cpu_mem_usage: bool = False,
     ):
         self.model_name = model_name
-        self.is_llama_family = is_llama_family_name(model_name)
-        local_model_paths = {
-            DEFAULT_GPTJ_REMOTE: DEFAULT_GPTJ_LOCAL,
-            "gpt-j-6B": DEFAULT_GPTJ_LOCAL,
-            DEFAULT_LLAMA3_REMOTE: DEFAULT_LLAMA3_LOCAL,
-            "Meta-Llama-3-8B-Instruct": DEFAULT_LLAMA3_LOCAL,
-        }
-        model_path = local_model_paths.get(model_name, model_name) if local else model_name
+        self.family = get_model_family(model_name)
+        self.uses_model_layers = uses_model_layers(model_name)
+        tokenizer = support_load_tokenizer(model_name, local=local)
 
-        if self.is_llama_family:
-            tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-            tokenizer.padding_side = "left"
-        else:
-            tokenizer = AutoTokenizer.from_pretrained(model_path)
-
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
+        model = load_causal_lm(
+            model_name,
+            local=local,
             torch_dtype=torch_dtype,
             low_cpu_mem_usage=low_cpu_mem_usage,
         )
@@ -139,11 +127,11 @@ def check_contains(pred: str, gold_list: List[str]) -> bool:
 
 
 def encode_text(mt: ModelAndTokenizer, text: str) -> List[int]:
-    return mt.tokenizer.encode(text)
+    return support_encode_text(mt.tokenizer, text)
 
 
 def tokenize_prompt(mt: ModelAndTokenizer, prompt: str) -> Dict[str, torch.Tensor]:
-    if mt.is_llama_family:
+    if mt.uses_model_layers:
         return mt.tokenizer(prompt, return_tensors="pt").to(mt.device)
 
     token_ids = encode_text(mt, prompt)
@@ -155,7 +143,7 @@ def tokenize_prompt(mt: ModelAndTokenizer, prompt: str) -> Dict[str, torch.Tenso
 
 
 def get_pad_token_id(tokenizer):
-    return tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+    return support_get_pad_token_id(tokenizer)
 
 
 def generate_answer(mt: ModelAndTokenizer, prompt: str, max_new_tokens: int) -> str:
@@ -164,9 +152,7 @@ def generate_answer(mt: ModelAndTokenizer, prompt: str, max_new_tokens: int) -> 
         outputs = mt.model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            temperature=0.0,
-            do_sample=False,
-            pad_token_id=get_pad_token_id(mt.tokenizer),
+            **greedy_generation_kwargs(mt.tokenizer),
         )
     generated_ids = outputs[0][inputs["input_ids"].shape[1] :]
     return mt.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
@@ -370,7 +356,7 @@ def save_case_result(cases_dir: Path, result: dict) -> None:
 
 def main() -> None:
     args = parse_args()
-    modeldir = args.model_name.replace("/", "_")
+    modeldir = path_safe_model_name(args.model_name)
     output_dir = Path(args.output_dir.format(model_name=modeldir))
     cases_dir = output_dir / "cases"
     results_file = output_dir / "results.jsonl"
@@ -378,11 +364,11 @@ def main() -> None:
         raise FileExistsError(f"{results_file} already exists. Use --overwrite to replace it.")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    use_fp16 = ("llama" in args.model_name.lower()) or ("gpt-j" in args.model_name.lower())
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     mt = ModelAndTokenizer(
         args.model_name,
         local=args.local,
-        torch_dtype=torch.float16 if use_fp16 else None,
+        torch_dtype=default_torch_dtype(args.model_name, device),
     )
 
     cases = load_cases(args.input_file)

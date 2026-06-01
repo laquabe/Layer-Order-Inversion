@@ -86,10 +86,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("model_name", choices=[
-        "gpt2",
-        "meta-llama/Llama-2-7b-hf", "meta-llama/Llama-2-13b-hf",
-        "meta-llama/Meta-Llama-3-8B", "meta-llama/Meta-Llama-3-70B"])
+    parser.add_argument("model_name", type=str)
     parser.add_argument("target", choices=["attention", "mlp"])
     parser.add_argument("--input-path")
     parser.add_argument("--output-path")

@@ -1,7 +1,14 @@
 import pandas as pd
 import torch
-from transformers import AutoTokenizer
 from pathlib import Path
+import sys
+
+
+PROJECT_CODE_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_CODE_DIR))
+
+from model_support import find_token_range, load_tokenizer
 
 # ========= 你提供的 find_tokens =========
 
@@ -62,7 +69,7 @@ def filter_valid_entity_rows(input_csv, output_csv, model_name,
     df = pd.read_csv(input_csv)
     df = clean_dataframe(df)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    tokenizer = load_tokenizer(model_name)
     prepend_space = get_prepend_space(model_name)
 
     keep_mask = []
@@ -74,13 +81,10 @@ def filter_valid_entity_rows(input_csv, output_csv, model_name,
         # 如果 check_last_token 为 True，则检查最后一个字符是否匹配
         if check_last_token:
             last_token = prompt.split()[-1]
-            tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
-            token_pos = find_tokens(tokenizer, tokens, last_token, prepend_space)
+            token_pos = find_token_range(tokenizer, prompt, last_token, model_name)
 
         else:
-            # tokenize prompt 得到 token 序列
-            tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
-            token_pos = find_tokens(tokenizer, tokens, entity, prepend_space)
+            token_pos = find_token_range(tokenizer, prompt, entity, model_name)
 
         keep_mask.append(token_pos is not None)
 

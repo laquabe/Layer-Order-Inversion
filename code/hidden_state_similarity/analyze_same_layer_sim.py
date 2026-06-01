@@ -13,6 +13,7 @@ import os
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import numpy as np
@@ -21,7 +22,20 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM
+
+
+PROJECT_CODE_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_CODE_DIR))
+
+from model_support import (
+    default_torch_dtype,
+    find_token_range as support_find_token_range,
+    get_model_family,
+    load_causal_lm,
+    load_tokenizer as support_load_tokenizer,
+    register_sublayer_hooks,
+)
 
 
 # ===================== Hook 注册（GPT-J） =====================
@@ -80,24 +94,18 @@ def register_hooks_llama(model, target_module: str):
     return buffers, handles
 
 def get_model_type(model):
-    mt = model.config.model_type.lower()
-    if "gptj" in mt:
+    mt = get_model_family(model)
+    if mt == "gptj":
         return "gptj"
-    elif "llama" in mt:
-        return "llama"
+    if mt in {"llama", "qwen3", "gemma"}:
+        return mt
     else:
         raise ValueError(f"Unsupported model type: {mt}")
     
 # ===================== 编码 + 抽取层表示 =====================
 def encode_and_run(model, tokenizer, text: str, target_module: str, device: str, max_len: int):
     
-    model_type = get_model_type(model)
-    if model_type == "gptj":
-        buffers, handles = register_hooks_gptj(model, target_module)
-    elif model_type == "llama":
-        buffers, handles = register_hooks_llama(model, target_module)
-    else:
-        raise ValueError(f"Unsupported model type for encode_and_run: {model_type}")
+    buffers, handles = register_sublayer_hooks(model, target_module)
 
     enc = tokenizer(
         text,
@@ -167,67 +175,22 @@ def extract_subject_from_case(case: dict, hop_idx: int, is_multi: bool) -> Optio
 def locate_subject_tokens(model_type, tokenizer, tokens, offsets, text, subject_name, subject_input_ids):
     if not subject_name:
         return []
-
-    # ======================================================
-    # GPT-J: 依旧走 offset 匹配
-    # ======================================================
-    if model_type == "gptj":
-        spans = []
-        subj = subject_name.strip()
-
-        # full match
-        m = re.search(re.escape(subj), text, flags=re.IGNORECASE)
-        if m:
-            spans.append(m.span())
-        else:
-            for w in subj.split():
-                m = re.search(re.escape(w), text, flags=re.IGNORECASE)
-                if m:
-                    spans.append(m.span())
-
-        if not spans:
-            return []
-
-        idxs = set()
-        for (start, end) in spans:
-            for i, (ts, te) in enumerate(offsets):
-                if te <= ts:
-                    continue
-                if not (te <= start or ts >= end):
-                    idxs.add(i)
-        return sorted(idxs)
-
-    # ======================================================
-    # LLaMA: Token-based 匹配（含 自动加空格）
-    # ======================================================
-    elif model_type == "llama":
-
-        def find_tokens_llama(substring, prepend_space=False, last=True):
-            """LLaMA token 匹配，支持加空格与不加空格"""
-            if prepend_space:
-                substring = " " + substring
-
-            st = tokenizer(substring, add_special_tokens=False, return_tensors="pt").input_ids[0]
-            st = st.to(subject_input_ids.device)
-
-            full = subject_input_ids[0]
-            L, K = len(full), len(st)
-
-            for start in range(L - K + 1):
-                end = start + K
-                if torch.all(full[start:end] == st):
-                    return [end - 1] if last else list(range(start, end))
-            return None
-
-        name = subject_name.strip()
-
-        # 尝试 2：自动加空格匹配 SentencePiece 的 "▁word"
-        idxs = find_tokens_llama(name, prepend_space=True, last=True)
-        if idxs:
-            return idxs
-
-    else:
-        raise ValueError(f"Unsupported model type: {model_type}")
+    token_range = support_find_token_range(
+        tokenizer,
+        text,
+        subject_name.strip(),
+        model_or_name=model_type,
+    )
+    if token_range is None:
+        token_range = support_find_token_range(
+            tokenizer,
+            subject_input_ids[0],
+            subject_name.strip(),
+            model_or_name=model_type,
+        )
+    if token_range is None:
+        return []
+    return list(range(token_range[0], token_range[1]))
 
 
 
@@ -365,13 +328,11 @@ def main():
     # 加载模型
     print(f"[加载模型] {args.model}，目标模块: {args.target_module}")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer = support_load_tokenizer(args.model)
 
-    model = AutoModelForCausalLM.from_pretrained(
+    model = load_causal_lm(
         args.model,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        torch_dtype=default_torch_dtype(args.model, device),
         device_map="auto" if device == "cuda" else None
     )
     model.eval()

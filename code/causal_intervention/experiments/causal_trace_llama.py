@@ -2,7 +2,9 @@ import argparse
 import json
 import os
 import re
+import sys
 from collections import defaultdict
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy
@@ -10,7 +12,26 @@ import torch
 from datasets import load_dataset
 from matplotlib import pyplot as plt
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+PROJECT_CODE_DIR = Path(__file__).resolve().parents[2]
+if str(PROJECT_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_CODE_DIR))
+
+from model_support import (
+    DEFAULT_LLAMA3_REMOTE,
+    decode_tokens as support_decode_tokens,
+    encode_text as support_encode_text,
+    encode_without_special_tokens as support_encode_without_special_tokens,
+    find_token_range as support_find_token_range,
+    get_model_family,
+    get_pad_token_id as support_get_pad_token_id,
+    greedy_generation_kwargs,
+    layer_name as support_layer_name,
+    load_causal_lm,
+    load_tokenizer as support_load_tokenizer,
+    model_layers_from_named_modules,
+)
 
 from dsets import KnownsDataset
 from rome.tok_dataset import (
@@ -25,12 +46,10 @@ from util.runningstats import Covariance, tally
 
 
 PROMPT_PATCH_TOKEN_COUNT = 10
-DEFAULT_LLAMA3_PATH = "/data/xkliu/hf_models/Meta-Llama-3-8B-Instruct"
-DEFAULT_LLAMA3_REMOTE = "meta-llama/Meta-Llama-3-8B-Instruct"
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Causal Tracing for Meta-Llama-3-8B-Instruct")
+    parser = argparse.ArgumentParser(description="Causal Tracing for model.layers decoder-only models")
 
     def aa(*args, **kwargs):
         parser.add_argument(*args, **kwargs)
@@ -46,7 +65,7 @@ def main():
     aa(
         "--model_name",
         default=DEFAULT_LLAMA3_REMOTE,
-        help="Local path or HF name for the Llama 3 model.",
+        help="Local path or HF name for the Llama/Qwen3 decoder-only model.",
     )
     aa("--local", action="store_true", help="Load model from local path instead of remote HF name.")
     aa("--fact_file", default=None)
@@ -123,7 +142,7 @@ def main():
             pdfname = f'{pdf_dir}/{str(numpy_result["answer"]).strip()}_{known_id}{kind_suffix}.pdf'
             if known_id > 200:
                 continue
-            plot_trace_heatmap(plot_result, savepdf=pdfname, modelname="Llama")
+            plot_trace_heatmap(plot_result, savepdf=pdfname, modelname=mt.family)
 
 
 def trace_with_patch(
@@ -306,10 +325,10 @@ def calculate_hidden_flow(
 
     prompt_token_ids = encode_text(mt.tokenizer, formatted_prompt)
     prompt_token_len = len(prompt_token_ids)
-    prompt_subject_range = find_token_range(mt.tokenizer, formatted_prompt, subject)
+    prompt_subject_range = find_token_range(mt.tokenizer, formatted_prompt, subject, mt.model)
     prompt_last_token_index = prompt_token_len - 1
 
-    e_range = find_token_range(mt.tokenizer, prefix_text, subject)
+    e_range = find_token_range(mt.tokenizer, prefix_text, subject, mt.model)
     if prompt_subject_range is None or e_range is None:
         return dict(correct_prediction=False, generated_text=generated_text)
 
@@ -468,22 +487,16 @@ class ModelAndTokenizer:
         torch_dtype=None,
         local=False,
     ):
-        local_model_paths = {
-            "Meta-Llama-3-8B-Instruct": DEFAULT_LLAMA3_PATH,
-            DEFAULT_LLAMA3_REMOTE: DEFAULT_LLAMA3_PATH,
-        }
-        model_path = local_model_paths.get(model_name, model_name) if local else model_name
+        self.family = get_model_family(model_name)
 
         if tokenizer is None:
-            assert model_path is not None
-            tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-            tokenizer.padding_side = "left"
+            assert model_name is not None
+            tokenizer = support_load_tokenizer(model_name, local=local)
         if model is None:
-            assert model_path is not None
-            model = AutoModelForCausalLM.from_pretrained(
-                model_path,
+            assert model_name is not None
+            model = load_causal_lm(
+                model_name,
+                local=local,
                 low_cpu_mem_usage=low_cpu_mem_usage,
                 torch_dtype=torch_dtype,
             )
@@ -492,12 +505,7 @@ class ModelAndTokenizer:
         self.tokenizer = tokenizer
         self.model = model
         self.device = next(model.parameters()).device
-        self.layer_names = [
-            n
-            for n, _ in model.named_modules()
-            if re.match(r"^(transformer|gpt_neox)\.(h|layers)\.\d+$", n)
-            or re.match(r"^model\.layers\.\d+$", n)
-        ]
+        self.layer_names = model_layers_from_named_modules(model)
         self.num_layers = len(self.layer_names)
 
     def __repr__(self):
@@ -509,23 +517,7 @@ class ModelAndTokenizer:
 
 
 def layername(model, num, kind=None):
-    if hasattr(model, "transformer"):
-        if kind == "embed":
-            return "transformer.wte"
-        return f'transformer.h.{num}{"" if kind is None else "." + kind}'
-    if hasattr(model, "gpt_neox"):
-        if kind == "embed":
-            return "gpt_neox.embed_in"
-        if kind == "attn":
-            kind = "attention"
-        return f'gpt_neox.layers.{num}{"" if kind is None else "." + kind}'
-    if hasattr(model, "model") and hasattr(model.model, "layers"):
-        if kind == "embed":
-            return "model.embed_tokens"
-        if kind == "attn":
-            kind = "self_attn"
-        return f'model.layers.{num}{"" if kind is None else "." + kind}'
-    raise AssertionError("unknown transformer structure")
+    return support_layer_name(model, num, kind)
 
 
 def guess_subject(prompt):
@@ -557,7 +549,7 @@ def plot_hidden_flow(
         window=window,
         kind=kind,
     )
-    plot_trace_heatmap(result, savepdf, modelname="Llama")
+    plot_trace_heatmap(result, savepdf, modelname=mt.family)
 
 
 def plot_trace_heatmap(result, savepdf=None, title=None, xlabel=None, modelname=None):
@@ -622,16 +614,11 @@ def check_contains(pred: str, gold_list: List[str]) -> bool:
 
 def generate_answer(mt, prompt: str, max_new_tokens: int = 128) -> str:
     inputs = mt.tokenizer(prompt, return_tensors="pt").to(mt.model.device)
-    pad_token_id = mt.tokenizer.pad_token_id
-    if pad_token_id is None:
-        pad_token_id = mt.tokenizer.eos_token_id
     with torch.no_grad():
         outputs = mt.model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            temperature=0.0,
-            do_sample=False,
-            pad_token_id=pad_token_id,
+            **greedy_generation_kwargs(mt.tokenizer),
         )
     generated_ids = outputs[0][inputs["input_ids"].shape[1] :]
     return mt.tokenizer.decode(generated_ids, skip_special_tokens=True)
@@ -673,27 +660,19 @@ def make_inputs(tokenizer, prompts, device="cuda"):
 
 
 def decode_tokens(tokenizer, token_array):
-    if hasattr(token_array, "shape") and len(token_array.shape) > 1:
-        return [decode_tokens(tokenizer, row) for row in token_array]
-    return [tokenizer.decode([int(t)], skip_special_tokens=False) for t in token_array]
+    return support_decode_tokens(tokenizer, token_array)
 
 
 def encode_text(tokenizer, text):
-    return tokenizer.encode(text)
+    return support_encode_text(tokenizer, text)
 
 
 def encode_without_special_tokens(tokenizer, text):
-    return tokenizer.encode(text, add_special_tokens=False)
+    return support_encode_without_special_tokens(tokenizer, text)
 
 
 def get_pad_token_id(tokenizer):
-    if tokenizer.pad_token_id is not None:
-        return tokenizer.pad_token_id
-    if tokenizer.eos_token_id is not None:
-        return tokenizer.eos_token_id
-    if "[PAD]" in tokenizer.all_special_tokens:
-        return tokenizer.all_special_ids[tokenizer.all_special_tokens.index("[PAD]")]
-    return 0
+    return support_get_pad_token_id(tokenizer)
 
 
 def get_prepend_space(tokenizer):
@@ -771,17 +750,13 @@ def find_token_span_by_offsets(tokenizer, text, substring):
     return (tok_start, tok_end)
 
 
-def find_token_range(tokenizer, text, substring):
-    encoded = tokenizer(text, add_special_tokens=False, return_tensors="pt")
-    input_ids = encoded.input_ids[0]
-    prepend_space = get_prepend_space(tokenizer)
-
-    match = find_token_span_by_search(tokenizer, input_ids, substring, prepend_space=False)
-    if match is None and prepend_space:
-        match = find_token_span_by_search(tokenizer, input_ids, substring, prepend_space=True)
-    if match is None:
-        match = find_token_span_by_offsets(tokenizer, text, substring)
-    return match
+def find_token_range(tokenizer, text, substring, model_or_name=None):
+    return support_find_token_range(
+        tokenizer,
+        text,
+        substring,
+        model_or_name=model_or_name or tokenizer.name_or_path,
+    )
 
 
 def predict_token(mt, prompts, return_p=False):
