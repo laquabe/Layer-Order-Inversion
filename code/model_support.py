@@ -178,10 +178,15 @@ def get_eos_token_id(tokenizer):
 def greedy_generation_kwargs(tokenizer) -> dict:
     # 不显式传 eos_token_id：与原版各实验一致，交由 model.generation_config 决定停止条件
     # （Llama-3 的 eos 是列表 [128001,128009]，Qwen3 是 [151645,151643]，显式只传单个 id 会改变停止行为）。
+    # Qwen3 的 generation_config 默认带 temperature/top_p/top_k；即使 do_sample=False，
+    # transformers 也会提示这些采样参数无效。这里覆盖为非采样默认值，保持 greedy 解码且消除 warning。
     return {
         "do_sample": False,
         "num_beams": 1,
         "pad_token_id": get_pad_token_id(tokenizer),
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "top_k": 50,
     }
 
 

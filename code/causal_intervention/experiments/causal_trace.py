@@ -667,9 +667,12 @@ def generate_answer(mt, prompt: str, max_new_tokens: int = 128) -> str:
         outputs = mt.model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            temperature=0.0,
             do_sample=False,
+            num_beams=1,
             pad_token_id=mt.tokenizer.pad_token_id,
+            temperature=1.0,
+            top_p=1.0,
+            top_k=50,
         )
     generated_ids = outputs[0][inputs["input_ids"].shape[1] :]
     return mt.tokenizer.decode(generated_ids, skip_special_tokens=True)
