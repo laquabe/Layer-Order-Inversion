@@ -97,6 +97,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=str, required=True)
     parser.add_argument("--model", type=str, default="EleutherAI/gpt-j-6B")
+    parser.add_argument("--local", action="store_true", help="Resolve --model through local model aliases.")
     parser.add_argument("--output_dir", type=str, default="./outputs_split")
     parser.add_argument("--max_cases", type=int, default=None)
     parser.add_argument("--max_new_tokens", type=int, default=512)
@@ -114,9 +115,10 @@ def main():
     set_seeds(args.seed)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = load_tokenizer(args.model)
+    tokenizer = load_tokenizer(args.model, local=args.local)
     model = load_causal_lm(
         args.model,
+        local=args.local,
         torch_dtype=default_torch_dtype(args.model, device),
         device=device,
     )

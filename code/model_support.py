@@ -13,6 +13,8 @@ DEFAULT_LLAMA3_REMOTE = "meta-llama/Meta-Llama-3-8B-Instruct"
 DEFAULT_LLAMA3_LOCAL = "/data/xkliu/hf_models/Meta-Llama-3-8B-Instruct"
 DEFAULT_QWEN3_REMOTE = "Qwen/Qwen3-4B-Instruct-2507"
 DEFAULT_QWEN3_LOCAL = "/data/xkliu/hf_models/Qwen3-4B-Instruct-2507"
+DEFAULT_QWEN3_14B_REMOTE = "Qwen/Qwen3-14B"
+DEFAULT_QWEN3_14B_LOCAL = "/data/xkliu/hf_models/Qwen3-14B"
 
 LOCAL_MODEL_PATHS = {
     DEFAULT_GPTJ_REMOTE: DEFAULT_GPTJ_LOCAL,
@@ -21,6 +23,9 @@ LOCAL_MODEL_PATHS = {
     "Meta-Llama-3-8B-Instruct": DEFAULT_LLAMA3_LOCAL,
     DEFAULT_QWEN3_REMOTE: DEFAULT_QWEN3_LOCAL,
     "Qwen3-4B-Instruct-2507": DEFAULT_QWEN3_LOCAL,
+    DEFAULT_QWEN3_14B_REMOTE: DEFAULT_QWEN3_14B_LOCAL,
+    "Qwen3-14B": DEFAULT_QWEN3_14B_LOCAL,
+    "qwen3-14b": DEFAULT_QWEN3_14B_LOCAL,
 }
 
 MODEL_LAYERS_FAMILIES = {"llama", "gemma", "qwen3"}

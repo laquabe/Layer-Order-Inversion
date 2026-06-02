@@ -8,5 +8,5 @@ seaborn==0.13.2
 SPARQLWrapper==2.0.0
 torch==2.1.0+cu121
 tqdm==4.65.0
-transformers==4.40.0
+transformers>=4.51.0
 baukit @ git+https://github.com/davidbau/baukit@9d51abd51ebf29769aecc38c4cbef459b731a36e

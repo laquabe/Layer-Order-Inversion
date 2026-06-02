@@ -15,6 +15,15 @@ Please visit [Mquake](https://github.com/princeton-nlp/MQuAKE?tab=readme-ov-file
 
 We recommend running `code/model_structure.py` first to examine the model structure, particularly the names of each layer.
 
+For Qwen3-14B, use the official Hugging Face model name:
+```
+python3 code/classify_model_performance.py --data data/MQuAKE-CF-3k-v2.json --model Qwen/Qwen3-14B --output_dir ./qwen3-14b_classified_results
+```
+If the checkpoint is stored at the default local path `/data/xkliu/hf_models/Qwen3-14B`, use:
+```
+python3 code/classify_model_performance.py --data data/MQuAKE-CF-3k-v2.json --model Qwen3-14B --local --output_dir ./qwen3-14b_classified_results
+```
+
 ### Data Split
 
 run 
